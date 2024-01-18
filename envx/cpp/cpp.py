@@ -1,7 +1,7 @@
 """Implementation of a Jax-accelerated cartpole environment."""
 from __future__ import annotations
 
-from typing import Any, Tuple
+from typing import Any, Tuple, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -17,13 +17,30 @@ from gymnasium.experimental.functional_jax_env import (
 )
 from gymnasium.utils import EzPickle
 
-
 RenderStateType = Tuple["pygame.Surface", "pygame.time.Clock"]  # type: ignore  # noqa: F821
 
 
+class EnvState(NamedTuple):
+    position: jnp.array
+    angle: jnp.array
+    # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
+    map_frontier: jnp.array
+    map_obstacle: jnp.array
+    map_farmland: jnp.array
+    map_trajectory: jnp.array
+    last_action: int
+    fallen: bool
+
+class EnvConfig(NamedTuple):
+    time_slice: float
+    map_size: jnp.array
+
+
 class CppFunctional(
-    FuncEnv[jax.Array, jax.Array, jax.Array, float, bool, RenderStateType]
+    FuncEnv[EnvState, jax.Array, jax.Array, float, bool, RenderStateType]
 ):
+    time_slice = 0.02
+
     gravity = 9.8
     masscart = 1.0
     masspole = 0.1
@@ -59,7 +76,7 @@ class CppFunctional(
         )
 
     def transition(
-        self, state: jax.Array, action: int | jax.Array, rng: None = None
+            self, state: jax.Array, action: int | jax.Array, rng: None = None
     ) -> StateType:
         """Cartpole transition."""
         x, x_dot, theta, theta_dot = state
@@ -70,10 +87,10 @@ class CppFunctional(
         # For the interested reader:
         # https://coneural.org/florian/papers/05_cart_pole.pdf
         temp = (
-            force + self.polemass_length * theta_dot**2 * sintheta
-        ) / self.total_mass
+                       force + self.polemass_length * theta_dot ** 2 * sintheta
+               ) / self.total_mass
         thetaacc = (self.gravity * sintheta - costheta * temp) / (
-            self.length * (4.0 / 3.0 - self.masspole * costheta**2 / self.total_mass)
+                self.length * (4.0 / 3.0 - self.masspole * costheta ** 2 / self.total_mass)
         )
         xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
 
@@ -95,34 +112,34 @@ class CppFunctional(
         x, _, theta, _ = state
 
         terminated = (
-            (x < -self.x_threshold)
-            | (x > self.x_threshold)
-            | (theta < -self.theta_threshold_radians)
-            | (theta > self.theta_threshold_radians)
+                (x < -self.x_threshold)
+                | (x > self.x_threshold)
+                | (theta < -self.theta_threshold_radians)
+                | (theta > self.theta_threshold_radians)
         )
 
         return terminated
 
     def reward(
-        self, state: StateType, action: ActType, next_state: StateType
+            self, state: StateType, action: ActType, next_state: StateType
     ) -> jax.Array:
         """Computes the reward for the state transition using the action."""
         x, _, theta, _ = state
 
         terminated = (
-            (x < -self.x_threshold)
-            | (x > self.x_threshold)
-            | (theta < -self.theta_threshold_radians)
-            | (theta > self.theta_threshold_radians)
+                (x < -self.x_threshold)
+                | (x > self.x_threshold)
+                | (theta < -self.theta_threshold_radians)
+                | (theta > self.theta_threshold_radians)
         )
 
         reward = jax.lax.cond(terminated, lambda: 0.0, lambda: 1.0)
         return reward
 
     def render_image(
-        self,
-        state: StateType,
-        render_state: RenderStateType,
+            self,
+            state: StateType,
+            render_state: RenderStateType,
     ) -> tuple[RenderStateType, np.ndarray]:
         """Renders an image of the state using the render state."""
         try:
@@ -195,7 +212,7 @@ class CppFunctional(
         )
 
     def render_init(
-        self, screen_width: int = 600, screen_height: int = 400
+            self, screen_width: int = 600, screen_height: int = 400
     ) -> RenderStateType:
         """Initialises the render state for a screen width and height."""
         try:
@@ -249,11 +266,11 @@ class CppJaxVectorEnv(FunctionalJaxVectorEnv, EzPickle):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
 
     def __init__(
-        self,
-        num_envs: int,
-        render_mode: str | None = None,
-        max_episode_steps: int = 200,
-        **kwargs: Any,
+            self,
+            num_envs: int,
+            render_mode: str | None = None,
+            max_episode_steps: int = 200,
+            **kwargs: Any,
     ):
         """Constructor for the vectorized CartPole where the kwargs are applied to the functional environment."""
         EzPickle.__init__(
