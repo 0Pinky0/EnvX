@@ -1,0 +1,15 @@
+# Setuptools
+/dist/
+/build/
+/wheels/
+/wheelhouse/
+
+# Python egg metadata, regenerated from source files by setuptools.
+/*.egg-info
+
+# Venv
+/venv/
+
+# IDEs
+/.idea/
+/.vscode/
