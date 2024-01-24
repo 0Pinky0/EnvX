@@ -10,55 +10,55 @@ from jax.random import PRNGKey
 
 import gymnasium as gym
 from gymnasium.error import DependencyNotInstalled
-from gymnasium.experimental.functional import ActType, FuncEnv, StateType
+from gymnasium.experimental.functional import FuncEnv
 from gymnasium.experimental.functional_jax_env import (
     FunctionalJaxEnv,
     FunctionalJaxVectorEnv,
 )
 from gymnasium.utils import EzPickle
 
-RenderStateType = Tuple["pygame.Surface", "pygame.time.Clock"]  # type: ignore  # noqa: F821
-
 
 class EnvState(NamedTuple):
     position: jnp.array
-    angle: jnp.array
+    theta: jnp.array
     # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
     map_frontier: jnp.array
     map_obstacle: jnp.array
     map_farmland: jnp.array
     map_trajectory: jnp.array
-    last_action: int
-    fallen: bool
+
 
 class EnvConfig(NamedTuple):
-    time_slice: float
     map_size: jnp.array
+
+
+RenderStateType = Tuple["pygame.Surface", "pygame.time.Clock"]
 
 
 class CppFunctional(
     FuncEnv[EnvState, jax.Array, jax.Array, float, bool, RenderStateType]
 ):
-    time_slice = 0.02
+    tau: float = 0.02
 
-    gravity = 9.8
-    masscart = 1.0
-    masspole = 0.1
-    total_mass = masspole + masscart
-    length = 0.5
-    polemass_length = masspole + length
-    force_mag = 10.0
-    tau = 0.02
-    theta_threshold_radians = 12 * 2 * np.pi / 360
-    x_threshold = 2.4
-    x_init = 0.05
+    r_self: int = 4
+
+    # gravity = 9.8
+    # masscart = 1.0
+    # masspole = 0.1
+    # total_mass = masspole + masscart
+    # length = 0.5
+    # polemass_length = masspole + length
+    # force_mag = 10.0
+    # theta_threshold_radians = 12 * 2 * np.pi / 360
+    # x_threshold = 2.4
+    # x_init = 0.05
 
     screen_width = 600
     screen_height = 600
 
     action_space = gym.spaces.Box(
-        low=np.array([-4, -1800]),
-        high=np.array([12, 1800]),
+        low=np.array([-1, -3]),
+        high=np.array([2, 3]),
         shape=(2,),
         dtype=np.float32
     )  # 4 directions
@@ -71,43 +71,74 @@ class CppFunctional(
 
     def initial(self, rng: PRNGKey):
         """Initial state generation."""
-        return jax.random.uniform(
-            key=rng, minval=-self.x_init, maxval=self.x_init, shape=(4,)
+        position = jnp.array([100, 100])
+        x, y = position
+
+        map_frontier = jnp.ones([600, 600])
+        xs = jax.lax.broadcast(jnp.arange(0, 600), sizes=[600])
+        ys = jax.lax.broadcast(jnp.arange(0, 600), sizes=[600]).swapaxes(0, 1)
+        dist_map = (xs - x) * (xs - x) + (ys - y) * (ys - y)
+        map_frontier = jnp.where(dist_map <= 16, 0, map_frontier)
+        state = EnvState(
+            position=position,
+            theta=jnp.array([0]),
+            map_frontier=map_frontier,
+            map_obstacle=jnp.zeros([600, 600]),
+            map_farmland=jnp.zeros([600, 600]),
+            map_trajectory=jnp.zeros([600, 600]),
         )
-
-    def transition(
-            self, state: jax.Array, action: int | jax.Array, rng: None = None
-    ) -> StateType:
-        """Cartpole transition."""
-        x, x_dot, theta, theta_dot = state
-        force = jnp.sign(action - 0.5) * self.force_mag
-        costheta = jnp.cos(theta)
-        sintheta = jnp.sin(theta)
-
-        # For the interested reader:
-        # https://coneural.org/florian/papers/05_cart_pole.pdf
-        temp = (
-                       force + self.polemass_length * theta_dot ** 2 * sintheta
-               ) / self.total_mass
-        thetaacc = (self.gravity * sintheta - costheta * temp) / (
-                self.length * (4.0 / 3.0 - self.masspole * costheta ** 2 / self.total_mass)
-        )
-        xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
-
-        x = x + self.tau * x_dot
-        x_dot = x_dot + self.tau * xacc
-        theta = theta + self.tau * theta_dot
-        theta_dot = theta_dot + self.tau * thetaacc
-
-        new_state = jnp.array((x, x_dot, theta, theta_dot), dtype=jnp.float32)
-
-        return new_state
-
-    def observation(self, state: jax.Array) -> jax.Array:
-        """Cartpole observation."""
         return state
 
-    def terminal(self, state: jax.Array) -> jax.Array:
+    def transition(
+            self, state: EnvState, action: jax.Array, rng: None = None
+    ) -> EnvState:
+        """Cartpole transition."""
+        (position,
+         theta,
+         map_frontier,
+         map_obstacle,
+         map_farmland,
+         map_trajectory) = state
+        v_linear, v_angular = action
+
+        # Calculate new pos and angle
+        cos_theta = jnp.cos(theta)
+        sin_theta = jnp.sin(theta)
+        new_position = position + v_linear * jnp.array([cos_theta, sin_theta]) * self.tau
+        new_theta = theta + v_angular * self.tau
+        new_theta = (new_theta + jnp.pi) % (2 * jnp.pi) - jnp.pi
+
+        # Update Maps
+        x, y = new_position
+        xs = jax.lax.broadcast(jnp.arange(0, 600), sizes=[600])
+        ys = jax.lax.broadcast(jnp.arange(0, 600), sizes=[600]).swapaxes(0, 1)
+        dist_map = (xs - x) * (xs - x) + (ys - y) * (ys - y)
+        map_frontier = jnp.where(dist_map <= 16, 0, map_frontier)
+
+        # Construct new state
+        state = EnvState(
+            position=new_position,
+            theta=new_theta,
+            map_frontier=map_frontier,
+            map_obstacle=map_obstacle,
+            map_farmland=map_farmland,
+            map_trajectory=map_trajectory,
+        )
+
+        return state
+
+    def observation(self, state: EnvState) -> jax.Array:
+        """Cartpole observation."""
+        (position,
+         theta,
+         map_frontier,
+         map_obstacle,
+         map_farmland,
+         map_trajectory) = state
+        x, y = position
+        return state
+
+    def terminal(self, state: EnvState) -> jax.Array:
         """Checks if the state is terminal."""
         x, _, theta, _ = state
 
@@ -121,7 +152,7 @@ class CppFunctional(
         return terminated
 
     def reward(
-            self, state: StateType, action: ActType, next_state: StateType
+            self, state: EnvState, action: jax.Array, next_state: EnvState
     ) -> jax.Array:
         """Computes the reward for the state transition using the action."""
         x, _, theta, _ = state
@@ -138,7 +169,7 @@ class CppFunctional(
 
     def render_image(
             self,
-            state: StateType,
+            state: EnvState,
             render_state: RenderStateType,
     ) -> tuple[RenderStateType, np.ndarray]:
         """Renders an image of the state using the render state."""
