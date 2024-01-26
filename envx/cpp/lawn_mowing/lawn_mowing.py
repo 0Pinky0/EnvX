@@ -1,7 +1,7 @@
 """Implementation of a Jax-accelerated cartpole environment."""
 from __future__ import annotations
 
-from typing import Any, Tuple, NamedTuple
+from typing import Any, Tuple, NamedTuple, Dict
 
 import jax
 from jax import lax
@@ -12,7 +12,7 @@ from jax.random import PRNGKey
 import gymnasium as gym
 from gymnasium.error import DependencyNotInstalled
 from gymnasium.experimental.functional import FuncEnv
-from gymnasium.experimental.functional_jax_env import (
+from envx.utils.functional_jax_env import (
     FunctionalJaxEnv,
     FunctionalJaxVectorEnv,
 )
@@ -67,12 +67,15 @@ class LawnMowingFunctional(
         shape=(2,),
         dtype=np.float32
     )  # 4 directions
-    observation_space = gym.spaces.Box(
-        low=0.,
-        high=1.,
-        shape=(2, 2 * r_obs, 2 * r_obs),
-        dtype=np.float32
-    )  # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
+    observation_space = gym.spaces.dict.Dict({
+        "observations": gym.spaces.Box(
+            low=0.,
+            high=1.,
+            shape=(2, 2 * r_obs, 2 * r_obs),
+            dtype=np.float32
+        ),
+        "pose": gym.spaces.Box(low=-1., high=1., shape=(2,), dtype=np.float32)
+    })  # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
 
     def initial(self, rng: PRNGKey):
         """Initial state generation."""
@@ -162,7 +165,7 @@ class LawnMowingFunctional(
 
         return state
 
-    def observation(self, state: EnvState) -> jax.Array:
+    def observation(self, state: EnvState) -> Dict[str, jax.Array]:
         """Cartpole observation."""
         (position,
          theta,
@@ -174,7 +177,9 @@ class LawnMowingFunctional(
          crashed,
          timestep) = state
         x, y = position.round().astype(jnp.int32)
-
+        cos_theta = jnp.cos(theta)
+        sin_theta = jnp.sin(theta)
+        pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
         # Frontier
         map_frontier_aug = jnp.zeros(
             [self.map_height + 2 * self.r_obs, self.map_width + 2 * self.r_obs],
@@ -207,7 +212,10 @@ class LawnMowingFunctional(
         )
 
         obs = jnp.stack([obs_frontier, obs_obstacle], dtype=jnp.float32)
-        return obs
+        return {
+            'observations': obs,
+            'pose': pose,
+        }
 
     def terminal(self, state: EnvState) -> jax.Array:
         """Checks if the state is terminal."""
@@ -304,9 +312,12 @@ class LawnMowingFunctional(
             mask_cols,
             mask_rows
         )
-        # 255 38 255
         # TV visualize
-
+        mask_tv_cols = state.map_frontier.astype(jnp.uint8)[1:, :] - state.map_frontier.astype(jnp.uint8)[:-1, :] != 0
+        mask_tv_cols = jnp.pad(mask_tv_cols, pad_width=[[0, 1], [0, 0]], mode='constant')
+        mask_tv_rows = state.map_frontier.astype(jnp.uint8)[:, 1:] - state.map_frontier.astype(jnp.uint8)[:, :-1] != 0
+        mask_tv_rows = jnp.pad(mask_tv_rows, pad_width=[[0, 0], [0, 1]], mode='constant')
+        mask_tv = jnp.logical_or(mask_tv_cols, mask_tv_rows)
         # Draw covered area and agent
         img = jnp.ones([self.map_height, self.map_width, 3], dtype=jnp.uint8) * 255
         img = jnp.where(
@@ -322,6 +333,11 @@ class LawnMowingFunctional(
         img = jnp.where(
             lax.broadcast(mask, sizes=[3]).transpose(1, 2, 0),
             jnp.array([0, 0, 255], dtype=jnp.uint8),
+            img
+        )
+        img = jnp.where(
+            lax.broadcast(mask_tv, sizes=[3]).transpose(1, 2, 0),
+            jnp.array([255, 38, 255], dtype=jnp.uint8),
             img
         )
         # Scale up the img
