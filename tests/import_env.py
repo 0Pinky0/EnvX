@@ -3,20 +3,20 @@ from gymnasium.wrappers import HumanRendering
 import envx.cpp
 
 env = gym.make('LawnMowing')
-env = gym.make('LawnMowing', render_mode='rgb_array')
-env = HumanRendering(env)
+# env = gym.make('LawnMowing', render_mode='rgb_array')
+# env = HumanRendering(env)
 obs, _ = env.reset()
-env.render()
-# count = 0
+# env.render()
 
 while True:
-    # if count == 1000:
-    #     break
-    # count += 1
     action = env.action_space.sample()
+    # action = [7, -1]
     obs, reward, done, truncated, _ = env.step(action)
-    # print(type(obs))
-    env.render()
     if done:
-        obs, _ = env.reset()
+        print(obs)
+        print(reward)
+    # env.render()
+    env.reset()
+    # if done:
+    #     obs, _ = env.reset()
 env.close()

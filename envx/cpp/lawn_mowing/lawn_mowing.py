@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Tuple, NamedTuple
 
 import jax
+from jax import lax
 import jax.numpy as jnp
 import numpy as np
 from jax.random import PRNGKey
@@ -15,7 +16,10 @@ from gymnasium.experimental.functional_jax_env import (
     FunctionalJaxEnv,
     FunctionalJaxVectorEnv,
 )
+from gymnasium.experimental.wrappers.jax_to_numpy import jax_to_numpy
 from gymnasium.utils import EzPickle
+
+from envx.cpp.lawn_mowing.utils import total_variation
 
 
 class EnvState(NamedTuple):
@@ -44,7 +48,8 @@ class LawnMowingFunctional(
     tau: float = 0.5
 
     r_self: int = 4
-    r_obs: int = 32
+    # r_obs: int = 64
+    r_obs: int = 128
 
     max_timestep: int = 1000
 
@@ -54,9 +59,11 @@ class LawnMowingFunctional(
     screen_width = 600
     screen_height = 600
 
+    v_max = 7
+
     action_space = gym.spaces.Box(
         low=np.array([0, -1]),
-        high=np.array([7, 1]),
+        high=np.array([v_max, 1]),
         shape=(2,),
         dtype=np.float32
     )  # 4 directions
@@ -70,23 +77,25 @@ class LawnMowingFunctional(
     def initial(self, rng: PRNGKey):
         """Initial state generation."""
         x = jax.random.uniform(
-            key=rng, minval=self.r_obs, maxval=self.map_height - self.r_obs
+            key=rng, minval=5 * self.r_self, maxval=self.map_height - 5 * self.r_self
         )
         _, rng = jax.random.split(rng)
         y = jax.random.uniform(
-            key=rng, minval=self.r_obs, maxval=self.map_width - self.r_obs
+            key=rng, minval=5 * self.r_self, maxval=self.map_width - 5 * self.r_self
         )
         position = jnp.stack([x, y])
+        _, rng = jax.random.split(rng)
+        theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
 
         map_frontier = jnp.ones([self.map_height, self.map_width], dtype=jnp.bool_)
-        xs = jax.lax.broadcast(jnp.arange(0, self.map_width), sizes=[self.map_height])
-        ys = jax.lax.broadcast(jnp.arange(0, self.map_height), sizes=[self.map_width]).swapaxes(0, 1)
+        xs = lax.broadcast(jnp.arange(0, self.map_width), sizes=[self.map_height])
+        ys = lax.broadcast(jnp.arange(0, self.map_height), sizes=[self.map_width]).swapaxes(0, 1)
         map_distance = (xs - x) * (xs - x) + (ys - y) * (ys - y)
         map_frontier = jnp.where(map_distance <= self.r_self * self.r_self, False, map_frontier)
 
         state = EnvState(
             position=position,
-            theta=jnp.array([0]),
+            theta=theta,
             map_frontier=map_frontier,
             map_obstacle=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
             map_farmland=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
@@ -122,8 +131,8 @@ class LawnMowingFunctional(
         # Update Maps
         x, y = new_position.round().astype(jnp.int32)
         # print(x, y)
-        xs = jax.lax.broadcast(jnp.arange(0, self.map_width), sizes=[self.map_height])
-        ys = jax.lax.broadcast(jnp.arange(0, self.map_height), sizes=[self.map_width]).swapaxes(0, 1)
+        xs = lax.broadcast(jnp.arange(0, self.map_width), sizes=[self.map_height])
+        ys = lax.broadcast(jnp.arange(0, self.map_height), sizes=[self.map_width]).swapaxes(0, 1)
         x_delta = xs - x
         y_delta = ys - y
         map_distance = x_delta * x_delta + y_delta * y_delta
@@ -166,62 +175,37 @@ class LawnMowingFunctional(
          timestep) = state
         x, y = position.round().astype(jnp.int32)
 
-        map_leftmost = jnp.maximum(x - self.r_obs, 0)
-        map_upmost = jnp.maximum(y - self.r_obs, 0)
-
-        obs_leftmost = jnp.maximum(self.r_obs - x, 0)
-        obs_rightmost = jnp.maximum(self.r_obs + x - self.map_height, 0)
-        obs_upmost = jnp.maximum(self.r_obs - y, 0)
-        obs_bottommost = jnp.maximum(self.r_obs + y - self.map_width, 0)
-
-        crop_leftmost = jnp.maximum(self.r_obs - x, 0)
-        crop_rightmost = jnp.minimum(self.r_obs - x + self.map_height, self.r_obs)
-        crop_upmost = jnp.maximum(self.r_obs - y, 0)
-        crop_bottommost = jnp.minimum(self.r_obs - y + self.map_width, self.r_obs)
-
-        mask_leftmost = jax.lax.broadcast(
-            jnp.arange(0, 2 * self.r_obs),
-            sizes=[2 * self.r_obs],
-        ) < crop_leftmost
-        mask_rightmost = jax.lax.broadcast(
-            jnp.arange(0, 2 * self.r_obs),
-            sizes=[2 * self.r_obs],
-        ) > crop_rightmost
-        mask_upmost = jax.lax.broadcast(
-            jnp.arange(0, 2 * self.r_obs),
-            sizes=[2 * self.r_obs],
-        ).swapaxes(0, 1) > crop_upmost
-        mask_bottommost = jax.lax.broadcast(
-            jnp.arange(0, 2 * self.r_obs),
-            sizes=[2 * self.r_obs],
-        ).swapaxes(0, 1) > crop_bottommost
-        mask = jnp.logical_or(mask_leftmost, mask_rightmost)
-        mask = jnp.logical_or(mask, mask_upmost)
-        mask = jnp.logical_or(mask, mask_bottommost)
-
-        crop_frontier = jax.lax.dynamic_slice(
+        # Frontier
+        map_frontier_aug = jnp.zeros(
+            [self.map_height + 2 * self.r_obs, self.map_width + 2 * self.r_obs],
+            dtype=jnp.bool_
+        )
+        map_frontier_aug = lax.dynamic_update_slice(
+            map_frontier_aug,
             map_frontier,
-            start_indices=(map_leftmost, map_upmost),
-            slice_sizes=(2 * self.r_obs, 2 * self.r_obs),
+            start_indices=(self.r_obs, self.r_obs)
         )
-        roll_frontier = jnp.roll(crop_frontier, shift=(-obs_leftmost + obs_rightmost, -obs_upmost + obs_bottommost))
-        obs_frontier = jnp.where(
-            mask,
-            1,
-            roll_frontier
+        obs_frontier = lax.dynamic_slice(
+            map_frontier_aug,
+            start_indices=(y, x),
+            slice_sizes=(2 * self.r_obs, 2 * self.r_obs)
+        )
+        # Obstacle
+        map_obstacle_aug = jnp.ones(
+            [self.map_height + 2 * self.r_obs, self.map_width + 2 * self.r_obs],
+            dtype=jnp.bool_
+        )
+        map_obstacle_aug = lax.dynamic_update_slice(
+            map_obstacle_aug,
+            map_obstacle,
+            start_indices=(self.r_obs, self.r_obs)
+        )
+        obs_obstacle = lax.dynamic_slice(
+            map_obstacle_aug,
+            start_indices=(y, x),
+            slice_sizes=(2 * self.r_obs, 2 * self.r_obs)
         )
 
-        crop_obstacle = jax.lax.dynamic_slice(
-            map_obstacle,
-            start_indices=(map_leftmost, map_upmost),
-            slice_sizes=(2 * self.r_obs, 2 * self.r_obs),
-        )
-        roll_obstacle = jnp.roll(crop_obstacle, shift=(-obs_leftmost + obs_rightmost, -obs_upmost + obs_bottommost))
-        obs_obstacle = jnp.where(
-            mask,
-            0,
-            roll_obstacle
-        )
         obs = jnp.stack([obs_frontier, obs_obstacle], dtype=jnp.float32)
         return obs
 
@@ -245,16 +229,24 @@ class LawnMowingFunctional(
     ) -> jax.Array:
         """Computes the reward for the state transition using the action."""
         reward_const = -0.1
-        reward_crash = jax.lax.select(next_state.crashed, -20, 0)
+        reward_collision = lax.select(next_state.crashed, -10, 0)
 
-        coverage_t = self.map_width * self.map_height - state.map_frontier.sum()
-        coverage_tp1 = self.map_width * self.map_height - next_state.map_frontier.sum()
-        reward_coverage = (coverage_tp1 - coverage_t) / 10
+        map_area = self.map_width * self.map_height
+        coverage_t = map_area - state.map_frontier.sum()
+        coverage_tp1 = map_area - next_state.map_frontier.sum()
+        reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_self * self.v_max * self.tau)
+
+        tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
+        tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
+        # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
+        reward_tv_incremental = -(tv_t - tv_tp1) / (2 * self.v_max * self.tau)
 
         reward = (
                 reward_const
-                + reward_crash
+                + reward_collision
                 + reward_coverage
+                # + reward_tv_global
+                + reward_tv_incremental
         )
         return reward
 
@@ -274,25 +266,13 @@ class LawnMowingFunctional(
             ) from e
         screen, clock = render_state
 
-        # Draw covered area and agent
-        img = jnp.ones([self.map_height, self.map_width, 3], dtype=jnp.uint8) * 255
-        img = jnp.where(
-            jax.lax.broadcast(state.map_frontier, sizes=[3]).transpose(1, 2, 0) == 0,
-            jnp.array([65, 227, 72], dtype=jnp.uint8),
-            img
-        )
-        img = jnp.where(
-            jax.lax.broadcast(state.map_distance, sizes=[3]).transpose(1, 2, 0) <= self.r_self * self.r_self,
-            jnp.array([255, 0, 0], dtype=jnp.uint8),
-            img
-        )
-        # Draw obs rectangle
+        # Mask for obs rectangle
         x, y = state.position.round().astype(jnp.int32)
-        obs_cols = jax.lax.broadcast(
+        obs_cols = lax.broadcast(
             jnp.arange(0, self.map_width),
             sizes=[self.map_height]
         )
-        obs_rows = jax.lax.broadcast(
+        obs_rows = lax.broadcast(
             jnp.arange(0, self.map_height),
             sizes=[self.map_width]
         ).swapaxes(0, 1)
@@ -324,14 +304,30 @@ class LawnMowingFunctional(
             mask_cols,
             mask_rows
         )
+        # 255 38 255
+        # TV visualize
+
+        # Draw covered area and agent
+        img = jnp.ones([self.map_height, self.map_width, 3], dtype=jnp.uint8) * 255
         img = jnp.where(
-            jax.lax.broadcast(mask, sizes=[3]).transpose(1, 2, 0),
+            lax.broadcast(state.map_frontier, sizes=[3]).transpose(1, 2, 0) == 0,
+            jnp.array([65, 227, 72], dtype=jnp.uint8),
+            img
+        )
+        img = jnp.where(
+            lax.broadcast(state.map_distance, sizes=[3]).transpose(1, 2, 0) <= self.r_self * self.r_self,
+            jnp.array([255, 0, 0], dtype=jnp.uint8),
+            img
+        )
+        img = jnp.where(
+            lax.broadcast(mask, sizes=[3]).transpose(1, 2, 0),
             jnp.array([0, 0, 255], dtype=jnp.uint8),
             img
         )
         # Scale up the img
         img = img.repeat(5, axis=0).repeat(5, axis=1)
-        img = np.array(img)
+        img = jax_to_numpy(img)
+        # img = np.array(img)
 
         surf = pygame.surfarray.make_surface(img)
         # surf = pygame.transform.scale(surf, size=(self.screen_width, self.screen_height))

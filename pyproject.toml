@@ -3,11 +3,12 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["envx"]
+where = ["."]
+include = ["envx*"]
 
 [project]
 name = "envx"
-version = "0.0.1"
+version = "0.1.0"
 authors = [
     { name = "0Pinky0", email = "lpinkyl@126.com" },
 ]
