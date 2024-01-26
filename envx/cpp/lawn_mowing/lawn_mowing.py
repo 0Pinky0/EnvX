@@ -237,17 +237,20 @@ class LawnMowingFunctional(
     ) -> jax.Array:
         """Computes the reward for the state transition using the action."""
         reward_const = -0.1
-        reward_collision = lax.select(next_state.crashed, -10, 0)
+        reward_collision = lax.select(next_state.crashed, -2000, 0)
 
         map_area = self.map_width * self.map_height
         coverage_t = map_area - state.map_frontier.sum()
         coverage_tp1 = map_area - next_state.map_frontier.sum()
-        reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_self * self.v_max * self.tau)
+        reward_coverage = (coverage_tp1 - coverage_t)  # / (2 * self.r_self * self.v_max * self.tau)
+        coverage_discount = self.r_self * self.v_max * self.tau / 2
+        reward_coverage = reward_coverage - coverage_discount
+        # reward_coverage = lax.select(reward_coverage == 0, -20, 0)
 
         tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
         tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
         # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
-        reward_tv_incremental = -(tv_t - tv_tp1) / (2 * self.v_max * self.tau)
+        reward_tv_incremental = -(tv_t - tv_tp1)  # / (2 * self.v_max * self.tau)
 
         reward = (
                 reward_const
