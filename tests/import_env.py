@@ -3,7 +3,7 @@ from gymnasium.wrappers import HumanRendering
 import envx.cpp
 
 # env = gym.make('LawnMowing')
-env = gym.make('LawnMowing', render_mode='rgb_array')
+env = gym.make('LawnMowingRender', render_mode='rgb_array')
 env = HumanRendering(env)
 obs, _ = env.reset()
 env.render()

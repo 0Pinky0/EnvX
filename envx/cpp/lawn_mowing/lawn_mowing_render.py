@@ -78,7 +78,7 @@ class LawnMowingRenderFunctional(
         'pixels': gym.spaces.Box(
             low=0,
             high=255,
-            shape=(300, 300, 3),
+            shape=(200, 200, 3),
             dtype=np.uint8
         )
     })  # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
@@ -285,15 +285,15 @@ class LawnMowingRenderFunctional(
             img
         )
         # Scale up the img
-        img = (img
-               .transpose(2, 0, 1)
-               .reshape(3, self.map_height, self.map_width / 2, self.map_width / 2)
-               .mean(axis=-1)
-               .transpose(0, 2, 1)
-               .reshape(3, self.map_width / 2, self.map_height / 2, self.map_height / 2)
-               .mean(axis=-1)
-               .transpose(2, 1 ,0)
-               )
+        # img = (img
+        #        .transpose(2, 0, 1)
+        #        .reshape(3, self.map_height, self.map_width // 2, self.map_width // 2)
+        #        .mean(axis=-1)
+        #        .transpose(0, 2, 1)
+        #        .reshape(3, self.map_width // 2, self.map_height // 2, self.map_height // 2)
+        #        .mean(axis=-1)
+        #        .transpose(2, 1 ,0)
+        #        )
         return {
             'observations': obs,
             'pose': pose,
