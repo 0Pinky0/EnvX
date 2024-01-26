@@ -149,6 +149,9 @@ class LawnMowingFunctional(
                 | (y < 0)
                 | (y > self.map_height)
         )
+        x = lax.clamp(0., x, float(self.map_width))
+        y = lax.clamp(0., y, float(self.map_height))
+        new_position = jnp.array([x, y])
 
         # Construct new state
         state = EnvState(
@@ -229,7 +232,8 @@ class LawnMowingFunctional(
          crashed,
          timestep) = state
 
-        terminated = jnp.logical_or(crashed, timestep >= self.max_timestep)
+        # terminated = jnp.logical_or(crashed, timestep >= self.max_timestep)
+        terminated = timestep >= self.max_timestep
         return terminated
 
     def reward(
@@ -237,20 +241,20 @@ class LawnMowingFunctional(
     ) -> jax.Array:
         """Computes the reward for the state transition using the action."""
         reward_const = -0.1
-        reward_collision = lax.select(next_state.crashed, -2000, 0)
+        reward_collision = lax.select(next_state.crashed, -10, 0)
 
         map_area = self.map_width * self.map_height
         coverage_t = map_area - state.map_frontier.sum()
         coverage_tp1 = map_area - next_state.map_frontier.sum()
-        reward_coverage = (coverage_tp1 - coverage_t)  # / (2 * self.r_self * self.v_max * self.tau)
-        coverage_discount = self.r_self * self.v_max * self.tau / 2
-        reward_coverage = reward_coverage - coverage_discount
-        # reward_coverage = lax.select(reward_coverage == 0, -20, 0)
+        reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_self * self.v_max * self.tau)
+        # coverage_discount = self.r_self * self.v_max * self.tau / 2
+        # reward_coverage = reward_coverage - coverage_discount
+        # reward_coverage = lax.select(reward_coverage == 0, -7, 0)
 
         tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
         tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
         # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
-        reward_tv_incremental = -(tv_t - tv_tp1)  # / (2 * self.v_max * self.tau)
+        reward_tv_incremental = -(tv_t - tv_tp1) / (2 * self.v_max * self.tau)
 
         reward = (
                 reward_const
@@ -279,6 +283,7 @@ class LawnMowingFunctional(
 
         # Mask for obs rectangle
         x, y = state.position.round().astype(jnp.int32)
+        # print(x, y)
         obs_cols = lax.broadcast(
             jnp.arange(0, self.map_width),
             sizes=[self.map_height]
