@@ -1,1 +1,3 @@
 from envx.cpp.lawn_mowing.lawn_mowing import LawnMowingJaxEnv, LawnMowingJaxVectorEnv
+from envx.cpp.lawn_mowing.lawn_mowing_render import LawnMowingRenderJaxEnv, LawnMowingRenderJaxVectorEnv
+
