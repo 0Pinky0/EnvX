@@ -222,18 +222,8 @@ class LawnMowingFunctional(
 
     def terminal(self, state: EnvState) -> jax.Array:
         """Checks if the state is terminal."""
-        (position,
-         theta,
-         map_frontier,
-         map_obstacle,
-         map_farmland,
-         map_trajectory,
-         map_distance,
-         crashed,
-         timestep) = state
-
         # terminated = jnp.logical_or(crashed, timestep >= self.max_timestep)
-        terminated = timestep >= self.max_timestep
+        terminated = state.timestep >= self.max_timestep
         return terminated
 
     def reward(
@@ -241,7 +231,7 @@ class LawnMowingFunctional(
     ) -> jax.Array:
         """Computes the reward for the state transition using the action."""
         reward_const = -0.1
-        reward_collision = lax.select(next_state.crashed, -10, 0)
+        reward_collision = lax.select(next_state.crashed, -30, 0)
 
         map_area = self.map_width * self.map_height
         coverage_t = map_area - state.map_frontier.sum()
@@ -250,18 +240,20 @@ class LawnMowingFunctional(
         # coverage_discount = self.r_self * self.v_max * self.tau / 2
         # reward_coverage = reward_coverage - coverage_discount
         # reward_coverage = lax.select(reward_coverage == 0, -7, 0)
+        reward_steer = -jnp.power(action[1] * 10, 2) / 40
 
         tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
         tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
         # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
-        reward_tv_incremental = -(tv_t - tv_tp1) / (2 * self.v_max * self.tau)
+        reward_tv_incremental = -(tv_tp1 - tv_t) / (2 * self.v_max * self.tau) / 2.5
 
         reward = (
                 reward_const
                 + reward_collision
                 + reward_coverage
-                # + reward_tv_global
                 + reward_tv_incremental
+                + reward_steer
+                # + reward_tv_global
         )
         return reward
 
