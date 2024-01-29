@@ -88,8 +88,8 @@ class LawnMowingFunctional(
         )
         position = jnp.stack([x, y])
         _, rng = jax.random.split(rng)
-        # theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
-        theta = jnp.array([0])
+        theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
+        # theta = jnp.array([0])
 
         map_frontier = jnp.ones([self.map_height, self.map_width], dtype=jnp.bool_)
         xs = lax.broadcast(jnp.arange(0, self.map_width), sizes=[self.map_height])
