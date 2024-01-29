@@ -88,7 +88,8 @@ class LawnMowingFunctional(
         )
         position = jnp.stack([x, y])
         _, rng = jax.random.split(rng)
-        theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
+        # theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
+        theta = jnp.array([0])
 
         map_frontier = jnp.ones([self.map_height, self.map_width], dtype=jnp.bool_)
         xs = lax.broadcast(jnp.arange(0, self.map_width), sizes=[self.map_height])
@@ -231,7 +232,7 @@ class LawnMowingFunctional(
     ) -> jax.Array:
         """Computes the reward for the state transition using the action."""
         reward_const = -0.1
-        reward_collision = lax.select(next_state.crashed, -30, 0)
+        reward_collision = lax.select(next_state.crashed, -10, 0)
 
         map_area = self.map_width * self.map_height
         coverage_t = map_area - state.map_frontier.sum()
@@ -245,14 +246,14 @@ class LawnMowingFunctional(
         tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
         tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
         # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
-        reward_tv_incremental = -(tv_tp1 - tv_t) / (2 * self.v_max * self.tau) / 2.5
+        reward_tv_incremental = -(tv_tp1 - tv_t) / (2 * self.v_max * self.tau)
 
         reward = (
                 reward_const
                 + reward_collision
                 + reward_coverage
                 + reward_tv_incremental
-                + reward_steer
+                # + reward_steer
                 # + reward_tv_global
         )
         return reward
@@ -342,10 +343,12 @@ class LawnMowingFunctional(
         )
         # Scale up the img
         img = img.repeat(5, axis=0).repeat(5, axis=1)
+        img = img.transpose(1, 0, 2)
         img = jax_to_numpy(img)
         # img = np.array(img)
 
         surf = pygame.surfarray.make_surface(img)
+        # surf = pygame.transform.flip(surf, False, True)
         # surf = pygame.transform.scale(surf, size=(self.screen_width, self.screen_height))
 
         screen.blit(surf, (0, 0))

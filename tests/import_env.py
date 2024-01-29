@@ -10,7 +10,7 @@ env.render()
 
 while True:
     # action = env.action_space.sample()
-    action = [4, -0.3]
+    action = [4, 0]
     obs, reward, done, truncated, _ = env.step(action)
     print(reward)
     # if done:
