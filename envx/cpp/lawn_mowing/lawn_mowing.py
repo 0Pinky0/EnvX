@@ -35,10 +35,6 @@ class EnvState(NamedTuple):
     timestep: int
 
 
-class EnvConfig(NamedTuple):
-    map_size: jnp.array
-
-
 RenderStateType = Tuple["pygame.Surface", "pygame.time.Clock"]
 
 
@@ -65,12 +61,12 @@ class LawnMowingFunctional(
     def __init__(
             self,
             save_pixels: bool = False,
-            continuous: bool = True,
+            action_type: str = "continuous",
             **kwargs: Any,
     ):
         super().__init__(**kwargs)
         self.save_pixels = save_pixels
-        self.continuous = continuous
+        self.action_type = action_type
         # Channels: [Frontier(unseen), Obstacles]
         # Future: [Farmland, Trajectory]
         if save_pixels:
@@ -99,17 +95,24 @@ class LawnMowingFunctional(
                 ),
                 "pose": gym.spaces.Box(low=-1., high=1., shape=(2,), dtype=np.float32)
             })
-        if continuous:
-            self.action_space = gym.spaces.Box(
-                low=np.array([0, -self.w_max]),
-                high=np.array([self.v_max, self.w_max]),
-                shape=(2,),
-                dtype=np.float32
-            )
-        else:
-            self.action_space = gym.spaces.MultiDiscrete(
-                nvec=self.nvec
-            )
+        match action_type:
+            case "continuous":
+                self.action_space = gym.spaces.Box(
+                    low=np.array([0, -self.w_max]),
+                    high=np.array([self.v_max, self.w_max]),
+                    shape=(2,),
+                    dtype=np.float32
+                )
+            case "discrete":
+                self.action_space = gym.spaces.Discrete(
+                    n=self.nvec[0] * self.nvec[1]
+                )
+            case "multi_discrete":
+                self.action_space = gym.spaces.MultiDiscrete(
+                    nvec=self.nvec
+                )
+            case _:
+                raise ValueError(f"Action type should be continuous, discrete or multi_discrete, got '{action_type}'")
 
     def initial(self, rng: PRNGKey):
         """Initial state generation."""
@@ -143,17 +146,29 @@ class LawnMowingFunctional(
         )
         return state
 
+    def get_velocity(self, action) -> Tuple[float, float]:
+        match self.action_type:
+            case "continuous":
+                v_linear, v_angular = action
+            case "discrete":
+                action_linear = action // self.nvec[1]
+                linear_size = self.nvec[0] - 1
+                v_linear = self.v_max * action_linear / linear_size
+                action_angular = action % self.nvec[1]
+                angular_size = (self.nvec[1] - 1) // 2
+                v_angular = self.w_max * (action_angular - 1 - angular_size) / angular_size
+            case "multi_discrete":
+                linear_size = self.nvec[0] - 1
+                v_linear = self.v_max * action[0] / linear_size
+                angular_size = (self.nvec[1] - 1) // 2
+                v_angular = self.w_max * (action[1] - 1 - angular_size) / angular_size
+        return v_linear, v_angular  # noqa
+
     def transition(
             self, state: EnvState, action: jax.Array, rng: None = None
     ) -> EnvState:
         """Cartpole transition."""
-        if self.continuous:
-            v_linear, v_angular = action
-        else:
-            linear_size = self.nvec[0] - 1
-            v_linear = self.v_max * action[0] / linear_size
-            angular_size = (self.nvec[1] - 1) // 2
-            v_angular = self.w_max * (action[1] - 1 - angular_size) / angular_size
+        v_linear, v_angular = self.get_velocity(action)
 
         # Calculate new pos and angle
         cos_theta = jnp.cos(state.theta)
@@ -264,7 +279,8 @@ class LawnMowingFunctional(
         # coverage_discount = self.r_self * self.v_max * self.tau / 2
         # reward_coverage = reward_coverage - coverage_discount
         # reward_coverage = lax.select(reward_coverage == 0, -7, 0)
-        reward_steer = -jnp.power(action[1] * 10, 2) / 40
+        # v_linear, v_angular = self.get_velocity(action)
+        # reward_steer = -jnp.power(v_angular * 10, 2) / 40
 
         tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
         tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
