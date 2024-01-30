@@ -1,7 +1,7 @@
 """Implementation of a Jax-accelerated cartpole environment."""
 from __future__ import annotations
 
-from typing import Any, Tuple, NamedTuple, Dict
+from typing import Any, Tuple, NamedTuple, Dict, List
 
 import jax
 from jax import lax
@@ -48,7 +48,6 @@ class LawnMowingFunctional(
     tau: float = 0.5
 
     r_self: int = 4
-    # r_obs: int = 64
     r_obs: int = 128
 
     max_timestep: int = 1000
@@ -61,21 +60,65 @@ class LawnMowingFunctional(
 
     v_max = 7
 
-    action_space = gym.spaces.Box(
-        low=np.array([0, -1]),
-        high=np.array([v_max, 1]),
-        shape=(2,),
-        dtype=np.float32
-    )  # 4 directions
-    observation_space = gym.spaces.dict.Dict({
-        "observations": gym.spaces.Box(
-            low=0.,
-            high=1.,
-            shape=(2, 2 * r_obs, 2 * r_obs),
-            dtype=np.float32
-        ),
-        "pose": gym.spaces.Box(low=-1., high=1., shape=(2,), dtype=np.float32)
-    })  # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
+    nvec = [8, 21]
+
+    # observation_space = gym.spaces.dict.Dict({
+    #     "observations": gym.spaces.Box(
+    #         low=0.,
+    #         high=1.,
+    #         shape=(2, 2 * r_obs, 2 * r_obs),
+    #         dtype=np.float32
+    #     ),
+    #     "pose": gym.spaces.Box(low=-1., high=1., shape=(2,), dtype=np.float32)
+    # })  # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
+
+    def __init__(
+            self,
+            save_pixels: bool = False,
+            continuous: bool = True,
+            **kwargs: Any,
+    ):
+        super().__init__(**kwargs)
+        self.save_pixels = save_pixels
+        self.continuous = continuous
+        # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
+        if save_pixels:
+            self.observation_space = gym.spaces.dict.Dict({
+                "observations": gym.spaces.Box(
+                    low=0.,
+                    high=1.,
+                    shape=(2, 2 * self.r_obs, 2 * self.r_obs),
+                    dtype=np.float32
+                ),
+                "pose": gym.spaces.Box(low=-1., high=1., shape=(2,), dtype=np.float32),
+                'pixels': gym.spaces.Box(
+                    low=0,
+                    high=255,
+                    shape=(200, 200, 3),
+                    dtype=np.uint8
+                )
+            })
+        else:
+            self.observation_space = gym.spaces.dict.Dict({
+                "observations": gym.spaces.Box(
+                    low=0.,
+                    high=1.,
+                    shape=(2, 2 * self.r_obs, 2 * self.r_obs),
+                    dtype=np.float32
+                ),
+                "pose": gym.spaces.Box(low=-1., high=1., shape=(2,), dtype=np.float32)
+            })
+        if continuous:
+            self.action_space = gym.spaces.Box(
+                low=np.array([0, -1]),
+                high=np.array([self.v_max, 1]),
+                shape=(2,),
+                dtype=np.float32
+            )
+        else:
+            self.action_space = gym.spaces.MultiDiscrete(
+                nvec=self.nvec
+            )
 
     def initial(self, rng: PRNGKey):
         """Initial state generation."""
@@ -123,7 +166,13 @@ class LawnMowingFunctional(
          map_distance,
          crashed,
          timestep) = state
-        v_linear, v_angular = action
+        if self.continuous:
+            v_linear, v_angular = action
+        else:
+            linear_size = self.nvec[0] - 1
+            v_linear = action[0] / linear_size
+            angular_size = (self.nvec[1] - 1) // 2
+            v_angular = (action[1] - 1 - angular_size) / angular_size
 
         # Calculate new pos and angle
         cos_theta = jnp.cos(theta)
@@ -214,9 +263,12 @@ class LawnMowingFunctional(
             start_indices=(y, x),
             slice_sizes=(2 * self.r_obs, 2 * self.r_obs)
         )
-
         obs = jnp.stack([obs_frontier, obs_obstacle], dtype=jnp.float32)
         return {
+            'observations': obs,
+            'pose': pose,
+            'pixels': self.get_render(state)
+        } if self.save_pixels else {
             'observations': obs,
             'pose': pose,
         }
@@ -253,27 +305,15 @@ class LawnMowingFunctional(
                 + reward_collision
                 + reward_coverage
                 + reward_tv_incremental
-                # + reward_steer
-                # + reward_tv_global
+            # + reward_steer
+            # + reward_tv_global
         )
         return reward
 
-    def render_image(
+    def get_render(
             self,
-            state: EnvState,
-            render_state: RenderStateType,
-    ) -> tuple[RenderStateType, np.ndarray]:
-        """Renders an image of the state using the render state."""
-        # print("Render")
-        try:
-            import pygame
-            from pygame import gfxdraw
-        except ImportError as e:
-            raise DependencyNotInstalled(
-                "pygame is not installed, run `pip install gymnasium[classic-control]`"
-            ) from e
-        screen, clock = render_state
-
+            state: EnvState
+    ) -> jax.Array:
         # Mask for obs rectangle
         x, y = state.position.round().astype(jnp.int32)
         # print(x, y)
@@ -344,6 +384,24 @@ class LawnMowingFunctional(
         # Scale up the img
         img = img.repeat(5, axis=0).repeat(5, axis=1)
         img = img.transpose(1, 0, 2)
+        return img
+
+    def render_image(
+            self,
+            state: EnvState,
+            render_state: RenderStateType,
+    ) -> tuple[RenderStateType, np.ndarray]:
+        """Renders an image of the state using the render state."""
+        try:
+            import pygame
+            from pygame import gfxdraw
+        except ImportError as e:
+            raise DependencyNotInstalled(
+                "pygame is not installed, run `pip install gymnasium[classic-control]`"
+            ) from e
+        screen, clock = render_state
+
+        img = self.get_render(state)
         img = jax_to_numpy(img)
         # img = np.array(img)
 
