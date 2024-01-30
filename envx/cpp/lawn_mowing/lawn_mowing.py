@@ -157,15 +157,6 @@ class LawnMowingFunctional(
             self, state: EnvState, action: jax.Array, rng: None = None
     ) -> EnvState:
         """Cartpole transition."""
-        (position,
-         theta,
-         map_frontier,
-         map_obstacle,
-         map_farmland,
-         map_trajectory,
-         map_distance,
-         crashed,
-         timestep) = state
         if self.continuous:
             v_linear, v_angular = action
         else:
@@ -175,10 +166,10 @@ class LawnMowingFunctional(
             v_angular = (action[1] - 1 - angular_size) / angular_size
 
         # Calculate new pos and angle
-        cos_theta = jnp.cos(theta)
-        sin_theta = jnp.sin(theta)
-        new_position = position + v_linear * jnp.array([cos_theta, sin_theta]).squeeze(axis=1) * self.tau
-        new_theta = theta + v_angular * self.tau
+        cos_theta = jnp.cos(state.theta)
+        sin_theta = jnp.sin(state.theta)
+        new_position = state.position + v_linear * jnp.array([cos_theta, sin_theta]).squeeze(axis=1) * self.tau
+        new_theta = state.theta + v_angular * self.tau
         new_theta = (new_theta + jnp.pi) % (2 * jnp.pi) - jnp.pi
 
         # Update Maps
@@ -189,7 +180,7 @@ class LawnMowingFunctional(
         x_delta = xs - x
         y_delta = ys - y
         map_distance = x_delta * x_delta + y_delta * y_delta
-        map_frontier = jnp.where(map_distance <= self.r_self * self.r_self, False, map_frontier)
+        map_frontier = jnp.where(map_distance <= self.r_self * self.r_self, False, state.map_frontier)
 
         # Examine whether outbounds
         x, y = new_position
@@ -208,30 +199,21 @@ class LawnMowingFunctional(
             position=new_position,
             theta=new_theta,
             map_frontier=map_frontier,
-            map_obstacle=map_obstacle,
-            map_farmland=map_farmland,
-            map_trajectory=map_trajectory,
+            map_obstacle=state.map_obstacle,
+            map_farmland=state.map_farmland,
+            map_trajectory=state.map_trajectory,
             map_distance=map_distance,
             crashed=crashed,
-            timestep=timestep + 1,
+            timestep=state.timestep + 1,
         )
 
         return state
 
     def observation(self, state: EnvState) -> Dict[str, jax.Array]:
         """Cartpole observation."""
-        (position,
-         theta,
-         map_frontier,
-         map_obstacle,
-         map_farmland,
-         map_trajectory,
-         map_distance,
-         crashed,
-         timestep) = state
-        x, y = position.round().astype(jnp.int32)
-        cos_theta = jnp.cos(theta)
-        sin_theta = jnp.sin(theta)
+        x, y = state.position.round().astype(jnp.int32)
+        cos_theta = jnp.cos(state.theta)
+        sin_theta = jnp.sin(state.theta)
         pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
         # Frontier
         map_frontier_aug = jnp.zeros(
@@ -240,7 +222,7 @@ class LawnMowingFunctional(
         )
         map_frontier_aug = lax.dynamic_update_slice(
             map_frontier_aug,
-            map_frontier,
+            state.map_frontier,
             start_indices=(self.r_obs, self.r_obs)
         )
         obs_frontier = lax.dynamic_slice(
@@ -255,7 +237,7 @@ class LawnMowingFunctional(
         )
         map_obstacle_aug = lax.dynamic_update_slice(
             map_obstacle_aug,
-            map_obstacle,
+            state.map_obstacle,
             start_indices=(self.r_obs, self.r_obs)
         )
         obs_obstacle = lax.dynamic_slice(
