@@ -368,7 +368,6 @@ class LawnMowingFunctional(
             img
         )
         # Scale up the img
-        img = img.repeat(5, axis=0).repeat(5, axis=1)
         img = img.transpose(1, 0, 2)
         return img
 
@@ -388,6 +387,7 @@ class LawnMowingFunctional(
         screen, clock = render_state
 
         img = self.get_render(state)
+        img = img.repeat(5, axis=0).repeat(5, axis=1)
         img = jax_to_numpy(img)
 
         surf = pygame.surfarray.make_surface(img)
