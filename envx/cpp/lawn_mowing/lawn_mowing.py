@@ -1,7 +1,7 @@
 """Implementation of a Jax-accelerated cartpole environment."""
 from __future__ import annotations
 
-from typing import Any, Tuple, NamedTuple, Dict, List
+from typing import Any, Tuple, NamedTuple, Dict
 
 import jax
 from jax import lax
@@ -59,18 +59,8 @@ class LawnMowingFunctional(
     screen_height = 600
 
     v_max = 7
-
+    w_max = 1
     nvec = [8, 21]
-
-    # observation_space = gym.spaces.dict.Dict({
-    #     "observations": gym.spaces.Box(
-    #         low=0.,
-    #         high=1.,
-    #         shape=(2, 2 * r_obs, 2 * r_obs),
-    #         dtype=np.float32
-    #     ),
-    #     "pose": gym.spaces.Box(low=-1., high=1., shape=(2,), dtype=np.float32)
-    # })  # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
 
     def __init__(
             self,
@@ -81,7 +71,8 @@ class LawnMowingFunctional(
         super().__init__(**kwargs)
         self.save_pixels = save_pixels
         self.continuous = continuous
-        # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
+        # Channels: [Frontier(unseen), Obstacles]
+        # Future: [Farmland, Trajectory]
         if save_pixels:
             self.observation_space = gym.spaces.dict.Dict({
                 "observations": gym.spaces.Box(
@@ -110,8 +101,8 @@ class LawnMowingFunctional(
             })
         if continuous:
             self.action_space = gym.spaces.Box(
-                low=np.array([0, -1]),
-                high=np.array([self.v_max, 1]),
+                low=np.array([0, -self.w_max]),
+                high=np.array([self.v_max, self.w_max]),
                 shape=(2,),
                 dtype=np.float32
             )
@@ -132,7 +123,6 @@ class LawnMowingFunctional(
         position = jnp.stack([x, y])
         _, rng = jax.random.split(rng)
         theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
-        # theta = jnp.array([0])
 
         map_frontier = jnp.ones([self.map_height, self.map_width], dtype=jnp.bool_)
         xs = lax.broadcast(jnp.arange(0, self.map_width), sizes=[self.map_height])
@@ -161,9 +151,9 @@ class LawnMowingFunctional(
             v_linear, v_angular = action
         else:
             linear_size = self.nvec[0] - 1
-            v_linear = action[0] / linear_size
+            v_linear = self.v_max * action[0] / linear_size
             angular_size = (self.nvec[1] - 1) // 2
-            v_angular = (action[1] - 1 - angular_size) / angular_size
+            v_angular = self.w_max * (action[1] - 1 - angular_size) / angular_size
 
         # Calculate new pos and angle
         cos_theta = jnp.cos(state.theta)
@@ -174,7 +164,6 @@ class LawnMowingFunctional(
 
         # Update Maps
         x, y = new_position.round().astype(jnp.int32)
-        # print(x, y)
         xs = lax.broadcast(jnp.arange(0, self.map_width), sizes=[self.map_height])
         ys = lax.broadcast(jnp.arange(0, self.map_height), sizes=[self.map_width]).swapaxes(0, 1)
         x_delta = xs - x
@@ -249,13 +238,13 @@ class LawnMowingFunctional(
         return {
             'observations': obs,
             'pose': pose,
-            'pixels': self.get_render(state)
+            'pixels': self.get_render(state),
         } if self.save_pixels else {
             'observations': obs,
             'pose': pose,
         }
 
-    def terminal(self, state: EnvState) -> jax.Array:
+    def terminal(self, state: EnvState) -> bool:
         """Checks if the state is terminal."""
         # terminated = jnp.logical_or(crashed, timestep >= self.max_timestep)
         terminated = state.timestep >= self.max_timestep
@@ -298,7 +287,6 @@ class LawnMowingFunctional(
     ) -> jax.Array:
         # Mask for obs rectangle
         x, y = state.position.round().astype(jnp.int32)
-        # print(x, y)
         obs_cols = lax.broadcast(
             jnp.arange(0, self.map_width),
             sizes=[self.map_height]
@@ -385,11 +373,9 @@ class LawnMowingFunctional(
 
         img = self.get_render(state)
         img = jax_to_numpy(img)
-        # img = np.array(img)
 
         surf = pygame.surfarray.make_surface(img)
         # surf = pygame.transform.flip(surf, False, True)
-        # surf = pygame.transform.scale(surf, size=(self.screen_width, self.screen_height))
 
         screen.blit(surf, (0, 0))
 
