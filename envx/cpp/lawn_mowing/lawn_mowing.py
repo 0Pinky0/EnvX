@@ -211,55 +211,6 @@ class LawnMowingFunctional(
 
         return state
 
-    def crop_obs(self, map: jax.Array, x: int, y: int, pad_ones: bool = True) -> jax.Array:
-        map_aug = jnp.full(
-            [self.map_height + 2 * self.r_obs, self.map_width + 2 * self.r_obs],
-            fill_value=pad_ones,
-            dtype=jnp.bool_
-        )
-        map_aug = lax.dynamic_update_slice(
-            map_aug,
-            map,
-            start_indices=(self.r_obs, self.r_obs)
-        )
-        obs = lax.dynamic_slice(
-            map_aug,
-            start_indices=(y, x),
-            slice_sizes=(2 * self.r_obs, 2 * self.r_obs)
-        )
-        return obs
-
-    def crop_obs_rotate(self, map: jax.Array, x: int, y: int, theta: jax.Array, pad_ones: bool = True) -> jax.Array:
-        map_aug = jnp.full(
-            [self.map_height + 2 * self.diag_obs, self.map_width + 2 * self.diag_obs],
-            fill_value=pad_ones,
-            dtype=jnp.bool_
-        )
-        map_aug = lax.dynamic_update_slice(
-            map_aug,
-            map,
-            start_indices=(self.diag_obs, self.diag_obs)
-        )
-        obs_aug = lax.dynamic_slice(
-            map_aug,
-            start_indices=(y, x),
-            slice_sizes=(2 * self.diag_obs, 2 * self.diag_obs)
-        )
-        # Transform 2d bool array into 3d float array, meeting plx demands
-        obs_aug = lax.broadcast(obs_aug, sizes=[1]).transpose(1, 2, 0).astype(jnp.float32)
-        obs_aug = augment.rotate(
-            image=obs_aug,
-            angle=theta[0] - jnp.pi,
-            # mode='constant',
-        )
-        obs_aug = obs_aug.squeeze(axis=-1)
-        obs = lax.dynamic_slice(
-            obs_aug,
-            start_indices=(self.diag_obs - self.r_obs, self.diag_obs - self.r_obs),
-            slice_sizes=(2 * self.r_obs, 2 * self.r_obs)
-        )
-        return obs
-
     def observation(self, state: EnvState) -> Dict[str, jax.Array]:
         """Cartpole observation."""
         x, y = state.position.round().astype(jnp.int32)
@@ -344,81 +295,6 @@ class LawnMowingFunctional(
         )
         return reward
 
-    def get_render(
-            self,
-            state: EnvState
-    ) -> jax.Array:
-        x, y = state.position.round().astype(jnp.int32)
-        # # Mask for obs rectangle
-        # obs_cols = lax.broadcast(
-        #     jnp.arange(0, self.map_width),
-        #     sizes=[self.map_height]
-        # )
-        # obs_rows = lax.broadcast(
-        #     jnp.arange(0, self.map_height),
-        #     sizes=[self.map_width]
-        # ).swapaxes(0, 1)
-        # mask_cols_range = jnp.logical_or(
-        #     obs_cols == x - self.r_obs,
-        #     obs_cols == x + self.r_obs
-        # )
-        # mask_rows_range = jnp.logical_or(
-        #     obs_rows == y - self.r_obs,
-        #     obs_rows == y + self.r_obs
-        # )
-        # mask_cols_condition = jnp.logical_and(
-        #     obs_rows >= y - self.r_obs,
-        #     obs_rows <= y + self.r_obs
-        # )
-        # mask_rows_condition = jnp.logical_and(
-        #     obs_cols >= x - self.r_obs,
-        #     obs_cols <= x + self.r_obs,
-        # )
-        # mask_cols = jnp.logical_and(
-        #     mask_cols_range,
-        #     mask_cols_condition
-        # )
-        # mask_rows = jnp.logical_and(
-        #     mask_rows_range,
-        #     mask_rows_condition,
-        # )
-        # mask_obs = jnp.logical_or(
-        #     mask_cols,
-        #     mask_rows
-        # )
-        # TV visualize
-        mask_tv_cols = state.map_frontier.astype(jnp.uint8)[1:, :] - state.map_frontier.astype(jnp.uint8)[:-1, :] != 0
-        mask_tv_cols = jnp.pad(mask_tv_cols, pad_width=[[0, 1], [0, 0]], mode='constant')
-        mask_tv_rows = state.map_frontier.astype(jnp.uint8)[:, 1:] - state.map_frontier.astype(jnp.uint8)[:, :-1] != 0
-        mask_tv_rows = jnp.pad(mask_tv_rows, pad_width=[[0, 0], [0, 1]], mode='constant')
-        mask_tv = jnp.logical_or(mask_tv_cols, mask_tv_rows)
-        # Draw covered area and agent
-        img = jnp.ones([self.map_height, self.map_width, 3], dtype=jnp.uint8) * 255
-        img = jnp.where(
-            lax.broadcast(state.map_frontier, sizes=[3]).transpose(1, 2, 0) == 0,
-            jnp.array([65, 227, 72], dtype=jnp.uint8),
-            img
-        )
-        img = jnp.where(
-            lax.broadcast(state.map_distance, sizes=[3]).transpose(1, 2,
-                                                                   0) <= self.r_self * self.r_self,
-            jnp.array([255, 0, 0], dtype=jnp.uint8),
-            img
-        )
-        # img = jnp.where(
-        #     lax.broadcast(mask_obs, sizes=[3]).transpose(1, 2, 0),
-        #     jnp.array([0, 0, 255], dtype=jnp.uint8),
-        #     img
-        # )
-        img = jnp.where(
-            lax.broadcast(mask_tv, sizes=[3]).transpose(1, 2, 0),
-            jnp.array([255, 38, 255], dtype=jnp.uint8),
-            img
-        )
-        # Scale up the img
-        img = img.transpose(1, 0, 2)
-        return img
-
     def render_image(
             self,
             state: EnvState,
@@ -472,6 +348,138 @@ class LawnMowingFunctional(
             ) from e
         pygame.display.quit()
         pygame.quit()
+
+    @staticmethod
+    @jax.jit
+    def crop_obs(map: jax.Array, x: int, y: int, pad_ones: bool = True) -> jax.Array:
+        map_aug = jnp.full(
+            [LawnMowingFunctional.map_height + 2 * LawnMowingFunctional.r_obs,
+             LawnMowingFunctional.map_width + 2 * LawnMowingFunctional.r_obs],
+            fill_value=pad_ones,
+            dtype=jnp.bool_
+        )
+        map_aug = lax.dynamic_update_slice(
+            map_aug,
+            map,
+            start_indices=(LawnMowingFunctional.r_obs, LawnMowingFunctional.r_obs)
+        )
+        obs = lax.dynamic_slice(
+            map_aug,
+            start_indices=(y, x),
+            slice_sizes=(2 * LawnMowingFunctional.r_obs, 2 * LawnMowingFunctional.r_obs)
+        )
+        return obs
+
+    @staticmethod
+    @jax.jit
+    def crop_obs_rotate(map: jax.Array, x: int, y: int, theta: jax.Array, pad_ones: bool = True) -> jax.Array:
+        map_aug = jnp.full(
+            [LawnMowingFunctional.map_height + 2 * LawnMowingFunctional.diag_obs,
+             LawnMowingFunctional.map_width + 2 * LawnMowingFunctional.diag_obs],
+            fill_value=pad_ones,
+            dtype=jnp.bool_
+        )
+        map_aug = lax.dynamic_update_slice(
+            map_aug,
+            map,
+            start_indices=(LawnMowingFunctional.diag_obs, LawnMowingFunctional.diag_obs)
+        )
+        obs_aug = lax.dynamic_slice(
+            map_aug,
+            start_indices=(y, x),
+            slice_sizes=(2 * LawnMowingFunctional.diag_obs, 2 * LawnMowingFunctional.diag_obs)
+        )
+        # Transform 2d bool array into 3d float array, meeting plx demands
+        obs_aug = lax.broadcast(obs_aug, sizes=[1]).transpose(1, 2, 0).astype(jnp.float32)
+        obs_aug = augment.rotate(
+            image=obs_aug,
+            angle=theta[0] - jnp.pi,
+            # mode='constant',
+        )
+        obs_aug = obs_aug.squeeze(axis=-1)
+        obs = lax.dynamic_slice(
+            obs_aug,
+            start_indices=(LawnMowingFunctional.diag_obs - LawnMowingFunctional.r_obs,
+                           LawnMowingFunctional.diag_obs - LawnMowingFunctional.r_obs),
+            slice_sizes=(2 * LawnMowingFunctional.r_obs, 2 * LawnMowingFunctional.r_obs)
+        )
+        return obs
+
+    @staticmethod
+    @jax.jit
+    def get_render(
+            state: EnvState
+    ) -> jax.Array:
+        # # Mask for obs rectangle
+        # x, y = state.position.round().astype(jnp.int32)
+        # obs_cols = lax.broadcast(
+        #     jnp.arange(0, self.map_width),
+        #     sizes=[self.map_height]
+        # )
+        # obs_rows = lax.broadcast(
+        #     jnp.arange(0, self.map_height),
+        #     sizes=[self.map_width]
+        # ).swapaxes(0, 1)
+        # mask_cols_range = jnp.logical_or(
+        #     obs_cols == x - self.r_obs,
+        #     obs_cols == x + self.r_obs
+        # )
+        # mask_rows_range = jnp.logical_or(
+        #     obs_rows == y - self.r_obs,
+        #     obs_rows == y + self.r_obs
+        # )
+        # mask_cols_condition = jnp.logical_and(
+        #     obs_rows >= y - self.r_obs,
+        #     obs_rows <= y + self.r_obs
+        # )
+        # mask_rows_condition = jnp.logical_and(
+        #     obs_cols >= x - self.r_obs,
+        #     obs_cols <= x + self.r_obs,
+        # )
+        # mask_cols = jnp.logical_and(
+        #     mask_cols_range,
+        #     mask_cols_condition
+        # )
+        # mask_rows = jnp.logical_and(
+        #     mask_rows_range,
+        #     mask_rows_condition,
+        # )
+        # mask_obs = jnp.logical_or(
+        #     mask_cols,
+        #     mask_rows
+        # )
+        # TV visualize
+        mask_tv_cols = state.map_frontier.astype(jnp.uint8)[1:, :] - state.map_frontier.astype(jnp.uint8)[:-1, :] != 0
+        mask_tv_cols = jnp.pad(mask_tv_cols, pad_width=[[0, 1], [0, 0]], mode='constant')
+        mask_tv_rows = state.map_frontier.astype(jnp.uint8)[:, 1:] - state.map_frontier.astype(jnp.uint8)[:, :-1] != 0
+        mask_tv_rows = jnp.pad(mask_tv_rows, pad_width=[[0, 0], [0, 1]], mode='constant')
+        mask_tv = jnp.logical_or(mask_tv_cols, mask_tv_rows)
+        # Draw covered area and agent
+        img = jnp.ones([LawnMowingFunctional.map_height, LawnMowingFunctional.map_width, 3], dtype=jnp.uint8) * 255
+        img = jnp.where(
+            lax.broadcast(state.map_frontier, sizes=[3]).transpose(1, 2, 0) == 0,
+            jnp.array([65, 227, 72], dtype=jnp.uint8),
+            img
+        )
+        img = jnp.where(
+            lax.broadcast(state.map_distance, sizes=[3]).transpose(1, 2,
+                                                                   0) <= LawnMowingFunctional.r_self * LawnMowingFunctional.r_self,
+            jnp.array([255, 0, 0], dtype=jnp.uint8),
+            img
+        )
+        # img = jnp.where(
+        #     lax.broadcast(mask_obs, sizes=[3]).transpose(1, 2, 0),
+        #     jnp.array([0, 0, 255], dtype=jnp.uint8),
+        #     img
+        # )
+        img = jnp.where(
+            lax.broadcast(mask_tv, sizes=[3]).transpose(1, 2, 0),
+            jnp.array([255, 38, 255], dtype=jnp.uint8),
+            img
+        )
+        # Scale up the img
+        img = img.transpose(1, 0, 2)
+        return img
 
 
 class LawnMowingJaxEnv(FunctionalJaxEnv, EzPickle):
