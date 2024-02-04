@@ -13,8 +13,11 @@ r_obs = LawnMowingFunctional.r_obs * 2
 window = pygame.display.set_mode((r_obs, r_obs))
 clock = pygame.time.Clock()
 
-env = gym.make('LawnMowing', rotate_obs=True)
+# env = gym.make('LawnMowing')
+env = gym.make('LawnMowing', render_mode='rgb_array', rotate_obs=True)
+env = HumanRendering(env)
 state, _ = env.reset()
+env.render()
 
 while True:
     obs = state['observations']
@@ -30,10 +33,11 @@ while True:
     clock.tick(50)
     pygame.display.flip()
 
-    action = env.action_space.sample()
-    # action = [2, -0.1]
+    # action = env.action_space.sample()
+    action = [7, 0]
     # action = [0, 0]
     state, reward, done, truncated, _ = env.step(action)
+    env.render()
     if done:
         state, _ = env.reset()
 env.close()
