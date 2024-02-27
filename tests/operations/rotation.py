@@ -1,6 +1,7 @@
+import jax
 import jax.numpy as jnp
 
-from envx.utils.pix import augment
+from envx.utils.pix.jitted import rotate_nearest
 
 is_hwc = True
 
@@ -13,10 +14,10 @@ a = jnp.array([[
 ]]).astype(jnp.float32)
 if is_hwc:
     a = a.transpose(1, 2, 0)
-b = augment.rotate(
+b = rotate_nearest(
     a,
     angle=jnp.pi / 4,
-    mode='constant',
+    # mode='constant',
     # cval=1.
 )
 if is_hwc:

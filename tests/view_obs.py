@@ -34,6 +34,7 @@ while True:
     # action = [2, -0.1]
     # action = [0, 0]
     state, reward, done, truncated, _ = env.step(action)
+    print(reward)
     if done:
         state, _ = env.reset()
 env.close()

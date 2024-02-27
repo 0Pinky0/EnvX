@@ -20,7 +20,7 @@ from gymnasium.experimental.wrappers.jax_to_numpy import jax_to_numpy
 from gymnasium.utils import EzPickle
 
 from envx.cpp.lawn_mowing.utils import total_variation
-from envx.utils.pix import augment
+from envx.utils.pix.jitted import rotate_nearest
 
 
 class EnvState(NamedTuple):
@@ -75,7 +75,7 @@ class LawnMowingFunctional(
         # Future: [Farmland, Trajectory]
         # Define obs space
         obs_dict = {
-            "observations": gym.spaces.Box(
+            "observation": gym.spaces.Box(
                 low=0.,
                 high=1.,
                 shape=(2, 2 * self.r_obs, 2 * self.r_obs),
@@ -250,7 +250,7 @@ class LawnMowingFunctional(
                 pad_ones=True,
             )
         obs = jnp.stack([obs_frontier, obs_obstacle], dtype=jnp.float32)
-        obs_dict = {'observations': obs}
+        obs_dict = {'observation': obs}
         if self.save_pixels:
             obs_dict['pixels'] = self.get_render(state)
         if not self.rotate_obs:
@@ -391,7 +391,7 @@ class LawnMowingFunctional(
         )
         # Transform 2d bool array into 3d float array, meeting plx demands
         obs_aug = lax.broadcast(obs_aug, sizes=[1]).transpose(1, 2, 0).astype(jnp.float32)
-        obs_aug = augment.rotate(
+        obs_aug = rotate_nearest(
             image=obs_aug,
             angle=theta[0] - jnp.pi,
             # mode='constant',
