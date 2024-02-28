@@ -45,32 +45,34 @@ class LawnMowingFunctional(
     tau: float = 0.5
 
     r_self: int = 4
-    r_obs: int = 128
+    r_obs: int = 48
     diag_obs: int = np.ceil(np.sqrt(2) * r_obs).astype(np.int32)
 
     max_timestep: int = 1000
 
-    map_width = 200
-    map_height = 200
+    map_width = 140
+    map_height = 140
 
     screen_width = 600
     screen_height = 600
 
     v_max = 7
     w_max = 1
-    nvec = [8, 21]
+    nvec = [4, 9]
 
     def __init__(
             self,
             save_pixels: bool = False,
             action_type: str = "continuous",
             rotate_obs: bool = False,
+            pbc: bool = False,  # Periodic Boundary Conditions, PBC
             **kwargs: Any,
     ):
         super().__init__(**kwargs)
         self.save_pixels = save_pixels
         self.action_type = action_type
         self.rotate_obs = rotate_obs
+        self.pbc = pbc
         # Channels: [Frontier(unseen), Obstacles]
         # Future: [Farmland, Trajectory]
         # Define obs space
@@ -86,7 +88,7 @@ class LawnMowingFunctional(
             obs_dict["pixels"] = gym.spaces.Box(
                 low=0,
                 high=255,
-                shape=(200, 200, 3),
+                shape=(self.map_height, self.map_width, 3),
                 dtype=np.uint8
             )
         if not rotate_obs:
@@ -111,6 +113,11 @@ class LawnMowingFunctional(
                 )
             case _:
                 raise ValueError(f"Action type should be continuous, discrete or multi_discrete, got '{action_type}'")
+        if pbc:
+            if rotate_obs:
+                assert 2 * jnp.sqrt(2) * self.r_obs <= max(self.map_width, self.map_height)
+            else:
+                assert 2 * self.r_obs <= max(self.map_width, self.map_height)
 
     def initial(self, rng: PRNGKey):
         """Initial state generation."""
@@ -149,8 +156,8 @@ class LawnMowingFunctional(
             case "continuous":
                 v_linear, v_angular = action
             case "discrete":
-                action_linear = action // self.nvec[1]
-                linear_size = self.nvec[0] - 1
+                action_linear = action // self.nvec[1] + 1
+                linear_size = self.nvec[0] - 1 + 1
                 v_linear = self.v_max * action_linear / linear_size
                 action_angular = action % self.nvec[1]
                 angular_size = (self.nvec[1] - 1) // 2
@@ -186,14 +193,18 @@ class LawnMowingFunctional(
 
         # Examine whether outbounds
         x, y = new_position
-        crashed = (
+        crashed = False if self.pbc else (
                 (x < 0)
                 | (x > self.map_width)
                 | (y < 0)
                 | (y > self.map_height)
         )
-        x = lax.clamp(0., x, float(self.map_width))
-        y = lax.clamp(0., y, float(self.map_height))
+        if self.pbc:
+            x = (x + self.map_width) % (1.0 * self.map_width)
+            y = (y + self.map_height) % (1.0 * self.map_height)
+        else:
+            x = lax.clamp(0., x, float(self.map_width))
+            y = lax.clamp(0., y, float(self.map_height))
         new_position = jnp.array([x, y])
 
         # Construct new state
@@ -218,37 +229,67 @@ class LawnMowingFunctional(
         sin_theta = jnp.sin(state.theta)
         pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
         if self.rotate_obs:
-            # Frontier
-            obs_frontier = self.crop_obs_rotate(
-                map=state.map_frontier,
-                x=x,
-                y=y,
-                theta=state.theta,
-                pad_ones=False,
-            )
-            # Obstacle
-            obs_obstacle = self.crop_obs_rotate(
-                map=state.map_obstacle,
-                x=x,
-                y=y,
-                theta=state.theta,
-                pad_ones=True,
-            )
+            if self.pbc:
+                # Frontier
+                obs_frontier = self.crop_obs_rotate_pbc(
+                    map=state.map_frontier,
+                    x=x,
+                    y=y,
+                    theta=state.theta,
+                )
+                # Obstacle
+                obs_obstacle = self.crop_obs_rotate_pbc(
+                    map=state.map_obstacle,
+                    x=x,
+                    y=y,
+                    theta=state.theta,
+                )
+            else:
+                # Frontier
+                obs_frontier = self.crop_obs_rotate(
+                    map=state.map_frontier,
+                    x=x,
+                    y=y,
+                    theta=state.theta,
+                    pad_ones=False,
+                )
+                # Obstacle
+                obs_obstacle = self.crop_obs_rotate(
+                    map=state.map_obstacle,
+                    x=x,
+                    y=y,
+                    theta=state.theta,
+                    pad_ones=True,
+                )
         else:
-            # Frontier
-            obs_frontier = self.crop_obs(
-                map=state.map_frontier,
-                x=x,
-                y=y,
-                pad_ones=False,
-            )
-            # Obstacle
-            obs_obstacle = self.crop_obs(
-                map=state.map_obstacle,
-                x=x,
-                y=y,
-                pad_ones=True,
-            )
+            if self.pbc:
+                # Frontier
+                obs_frontier = self.crop_obs_pbc(
+                    map=state.map_frontier,
+                    x=x,
+                    y=y,
+                )
+                # Obstacle
+                obs_obstacle = self.crop_obs_pbc(
+                    map=state.map_obstacle,
+                    x=x,
+                    y=y,
+                )
+            else:
+                # Frontier
+                obs_frontier = self.crop_obs(
+                    map=state.map_frontier,
+                    x=x,
+                    y=y,
+                    pad_ones=False,
+                )
+                # Obstacle
+                obs_obstacle = self.crop_obs(
+                    map=state.map_obstacle,
+                    x=x,
+                    y=y,
+                    pad_ones=True,
+                )
         obs = jnp.stack([obs_frontier, obs_obstacle], dtype=jnp.float32)
         obs_dict = {'observation': obs}
         if self.save_pixels:
@@ -372,6 +413,24 @@ class LawnMowingFunctional(
 
     @staticmethod
     @jax.jit
+    def crop_obs_pbc(map: jax.Array, x: int, y: int) -> jax.Array:
+        map_aug = jnp.roll(
+            map,
+            shift=(LawnMowingFunctional.map_height // 2 - y, LawnMowingFunctional.map_width // 2 - x),
+            axis=(0, 1)
+        )
+        obs = lax.dynamic_slice(
+            map_aug,
+            start_indices=(
+                LawnMowingFunctional.map_height // 2 - LawnMowingFunctional.r_obs,
+                LawnMowingFunctional.map_width // 2 - LawnMowingFunctional.r_obs
+            ),
+            slice_sizes=(2 * LawnMowingFunctional.r_obs, 2 * LawnMowingFunctional.r_obs)
+        )
+        return obs
+
+    @staticmethod
+    @jax.jit
     def crop_obs_rotate(map: jax.Array, x: int, y: int, theta: jax.Array, pad_ones: bool = True) -> jax.Array:
         map_aug = jnp.full(
             [LawnMowingFunctional.map_height + 2 * LawnMowingFunctional.diag_obs,
@@ -387,6 +446,38 @@ class LawnMowingFunctional(
         obs_aug = lax.dynamic_slice(
             map_aug,
             start_indices=(y, x),
+            slice_sizes=(2 * LawnMowingFunctional.diag_obs, 2 * LawnMowingFunctional.diag_obs)
+        )
+        # Transform 2d bool array into 3d float array, meeting plx demands
+        obs_aug = lax.broadcast(obs_aug, sizes=[1]).transpose(1, 2, 0).astype(jnp.float32)
+        obs_aug = rotate_nearest(
+            image=obs_aug,
+            angle=theta[0] - jnp.pi,
+            # mode='constant',
+        )
+        obs_aug = obs_aug.squeeze(axis=-1)
+        obs = lax.dynamic_slice(
+            obs_aug,
+            start_indices=(LawnMowingFunctional.diag_obs - LawnMowingFunctional.r_obs,
+                           LawnMowingFunctional.diag_obs - LawnMowingFunctional.r_obs),
+            slice_sizes=(2 * LawnMowingFunctional.r_obs, 2 * LawnMowingFunctional.r_obs)
+        )
+        return obs
+
+    @staticmethod
+    @jax.jit
+    def crop_obs_rotate_pbc(map: jax.Array, x: int, y: int, theta: jax.Array) -> jax.Array:
+        map_aug = jnp.roll(
+            map,
+            shift=(LawnMowingFunctional.map_height // 2 - y, LawnMowingFunctional.map_width // 2 - x),
+            axis=(0, 1)
+        )
+        obs_aug = lax.dynamic_slice(
+            map_aug,
+            start_indices=(
+                LawnMowingFunctional.map_height // 2 - LawnMowingFunctional.diag_obs,
+                LawnMowingFunctional.map_width // 2 - LawnMowingFunctional.diag_obs
+            ),
             slice_sizes=(2 * LawnMowingFunctional.diag_obs, 2 * LawnMowingFunctional.diag_obs)
         )
         # Transform 2d bool array into 3d float array, meeting plx demands

@@ -13,11 +13,11 @@ r_obs = LawnMowingFunctional.r_obs * 2
 window = pygame.display.set_mode((r_obs, r_obs))
 clock = pygame.time.Clock()
 
-env = gym.make('LawnMowing', rotate_obs=True)
+env = gym.make('LawnMowing', rotate_obs=False, pbc=False)
 state, _ = env.reset()
 
 while True:
-    obs = state['observations']
+    obs = state['observation']
     mask_frontier = np.broadcast_to(obs[0], shape=(3, r_obs, r_obs)).transpose(1, 2, 0)
     mask_obstacle = np.broadcast_to(obs[1], shape=(3, r_obs, r_obs)).transpose(1, 2, 0)
     img = np.ones([r_obs, r_obs, 3], dtype=np.uint8) * np.array([65, 227, 72])

@@ -29,6 +29,7 @@ class FunctionalJaxEnv(gym.Env):
         render_mode: str | None = None,
         reward_range: tuple[float, float] = (-float("inf"), float("inf")),
         spec: EnvSpec | None = None,
+        convert2numpy: bool = True,
     ):
         """Initialize the environment from a FuncEnv."""
         if metadata is None:
@@ -52,6 +53,8 @@ class FunctionalJaxEnv(gym.Env):
         else:
             self.render_state = None
 
+        self.convert2numpy = convert2numpy
+
         np_random, _ = seeding.np_random()
         seed = np_random.integers(0, 2**32 - 1, dtype="uint32")
 
@@ -69,11 +72,12 @@ class FunctionalJaxEnv(gym.Env):
         obs = self.func_env.observation(self.state)
         info = self.func_env.state_info(self.state)
 
-        if isinstance(obs, dict):
-            for key in obs.keys():
-                obs[key] = jax_to_numpy(obs[key])
-        else:
-            obs = jax_to_numpy(obs)
+        if self.convert2numpy:
+            if isinstance(obs, dict):
+                for key in obs.keys():
+                    obs[key] = jax_to_numpy(obs[key])
+            else:
+                obs = jax_to_numpy(obs)
 
         return obs, info
 
@@ -96,11 +100,12 @@ class FunctionalJaxEnv(gym.Env):
         info = self.func_env.step_info(self.state, action, next_state)
         self.state = next_state
 
-        if isinstance(observation, dict):
-            for key in observation.keys():
-                observation[key] = jax_to_numpy(observation[key])
-        else:
-            observation = jax_to_numpy(observation)
+        if self.convert2numpy:
+            if isinstance(observation, dict):
+                for key in observation.keys():
+                    observation[key] = jax_to_numpy(observation[key])
+            else:
+                observation = jax_to_numpy(observation)
 
         return observation, float(reward), bool(terminated), False, info
 
@@ -136,6 +141,7 @@ class FunctionalJaxVectorEnv(gym.experimental.vector.VectorEnv):
         render_mode: str | None = None,
         reward_range: tuple[float, float] = (-float("inf"), float("inf")),
         spec: EnvSpec | None = None,
+        convert2numpy: bool = True,
     ):
         """Initialize the environment from a FuncEnv."""
         super().__init__()
@@ -166,6 +172,8 @@ class FunctionalJaxVectorEnv(gym.experimental.vector.VectorEnv):
         else:
             self.render_state = None
 
+        self.convert2numpy = convert2numpy
+
         np_random, _ = seeding.np_random()
         seed = np_random.integers(0, 2**32 - 1, dtype="uint32")
 
@@ -189,7 +197,8 @@ class FunctionalJaxVectorEnv(gym.experimental.vector.VectorEnv):
 
         self.steps = jnp.zeros(self.num_envs, dtype=jnp.int32)
 
-        obs = jax_to_numpy(obs)
+        if self.convert2numpy:
+            obs = jax_to_numpy(obs)
 
         return obs, info
 
@@ -262,7 +271,8 @@ class FunctionalJaxVectorEnv(gym.experimental.vector.VectorEnv):
                 info["_final_info"][i] = True
 
         observation = self.func_env.observation(next_state)
-        observation = jax_to_numpy(observation)
+        if self.convert2numpy:
+            observation = jax_to_numpy(observation)
 
         self.state = next_state
 

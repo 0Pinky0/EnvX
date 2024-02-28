@@ -2,7 +2,7 @@ import gymnasium as gym
 from gymnasium.wrappers import HumanRendering
 import envx.cpp
 
-env = gym.make('LawnMowing', render_mode='rgb_array', save_pixels=True, action_type="discrete", rotate_obs=True)
+env = gym.make('LawnMowing', render_mode='rgb_array', save_pixels=True, action_type="discrete", rotate_obs=True, pbc=True)
 env = HumanRendering(env)
 obs, _ = env.reset()
 env.render()
