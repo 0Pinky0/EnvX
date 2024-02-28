@@ -1,8 +1,8 @@
 import numpy as np
 
 import gymnasium as gym
-from gymnasium.wrappers import HumanRendering
-import envx.cpp
+from gymnasium.wrappers import HumanRendering  # noqa
+import envx.cpp  # noqa
 from envx.cpp.lawn_mowing.lawn_mowing import LawnMowingFunctional
 
 import pygame
@@ -13,7 +13,7 @@ r_obs = LawnMowingFunctional.r_obs * 2
 window = pygame.display.set_mode((r_obs, r_obs))
 clock = pygame.time.Clock()
 
-env = gym.make('LawnMowing', rotate_obs=False, pbc=False)
+env = gym.make('LawnMowing', rotate_obs=True, pbc=True)
 state, _ = env.reset()
 
 while True:

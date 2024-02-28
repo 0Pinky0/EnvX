@@ -19,7 +19,7 @@ from envx.utils.functional_jax_env import (
 from gymnasium.experimental.wrappers.jax_to_numpy import jax_to_numpy
 from gymnasium.utils import EzPickle
 
-from envx.cpp.lawn_mowing.utils import total_variation
+import envx.cpp.lawn_mowing.utils as utils
 from envx.utils.pix.jitted import rotate_nearest
 
 
@@ -31,7 +31,6 @@ class EnvState(NamedTuple):
     map_obstacle: jax.Array
     map_farmland: jax.Array
     map_trajectory: jax.Array
-    map_distance: jax.Array
     crashed: bool
     timestep: int
 
@@ -59,6 +58,15 @@ class LawnMowingFunctional(
     v_max = 7
     w_max = 1
     nvec = [4, 9]
+
+    vision_mask = (
+                          (lax.broadcast(jnp.arange(0, map_width), sizes=[map_height]) - map_width // 2)
+                          * (lax.broadcast(jnp.arange(0, map_width), sizes=[map_height]) - map_width // 2)
+                          + (lax.broadcast(jnp.arange(0, map_height), sizes=[map_width]).swapaxes(0, 1)
+                             - map_height // 2)
+                          * (lax.broadcast(jnp.arange(0, map_height), sizes=[map_width]).swapaxes(0, 1)
+                             - map_height // 2)
+                  ) <= r_self * r_self
 
     def __init__(
             self,
@@ -132,11 +140,17 @@ class LawnMowingFunctional(
         _, rng = jax.random.split(rng)
         theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
 
+        x, y = position
         map_frontier = jnp.ones([self.map_height, self.map_width], dtype=jnp.bool_)
-        xs = lax.broadcast(jnp.arange(0, self.map_width), sizes=[self.map_height])
-        ys = lax.broadcast(jnp.arange(0, self.map_height), sizes=[self.map_width]).swapaxes(0, 1)
-        map_distance = (xs - x) * (xs - x) + (ys - y) * (ys - y)
-        map_frontier = jnp.where(map_distance <= self.r_self * self.r_self, False, map_frontier)
+        map_frontier = jnp.where(
+            jnp.roll(
+                self.vision_mask,
+                shift=(y - self.map_height // 2, x - self.map_width // 2),
+                axis=(0, 1)
+            ),
+            False,
+            map_frontier,
+        )
 
         state = EnvState(
             position=position,
@@ -145,7 +159,6 @@ class LawnMowingFunctional(
             map_obstacle=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
             map_farmland=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
             map_trajectory=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
-            map_distance=map_distance,
             crashed=False,
             timestep=0,
         )
@@ -178,27 +191,7 @@ class LawnMowingFunctional(
         # Calculate new pos and angle
         cos_theta = jnp.cos(state.theta)
         sin_theta = jnp.sin(state.theta)
-        new_position = state.position + v_linear * jnp.array([cos_theta, sin_theta]).squeeze(axis=1) * self.tau
-        new_theta = state.theta + v_angular * self.tau
-        new_theta = (new_theta + jnp.pi) % (2 * jnp.pi) - jnp.pi
-
-        # Update Maps
-        x, y = new_position.round().astype(jnp.int32)
-        xs = lax.broadcast(jnp.arange(0, self.map_width), sizes=[self.map_height])
-        ys = lax.broadcast(jnp.arange(0, self.map_height), sizes=[self.map_width]).swapaxes(0, 1)
-        x_delta = xs - x
-        y_delta = ys - y
-        map_distance = x_delta * x_delta + y_delta * y_delta
-        map_frontier = jnp.where(map_distance <= self.r_self * self.r_self, False, state.map_frontier)
-
-        # Examine whether outbounds
-        x, y = new_position
-        crashed = False if self.pbc else (
-                (x < 0)
-                | (x > self.map_width)
-                | (y < 0)
-                | (y > self.map_height)
-        )
+        x, y = state.position + v_linear * jnp.array([cos_theta, sin_theta]).squeeze(axis=1) * self.tau
         if self.pbc:
             x = (x + self.map_width) % (1.0 * self.map_width)
             y = (y + self.map_height) % (1.0 * self.map_height)
@@ -206,6 +199,30 @@ class LawnMowingFunctional(
             x = lax.clamp(0., x, float(self.map_width))
             y = lax.clamp(0., y, float(self.map_height))
         new_position = jnp.array([x, y])
+        new_theta = state.theta + v_angular * self.tau
+        new_theta = (new_theta + jnp.pi) % (2 * jnp.pi) - jnp.pi
+
+        # Update Maps
+        x, y = new_position.round().astype(jnp.int32)
+
+        map_frontier = state.map_frontier
+        map_frontier = jnp.where(
+            jnp.roll(
+                self.vision_mask,
+                shift=(y - self.map_height // 2, x - self.map_width // 2),
+                axis=(0, 1)
+            ),
+            False,
+            map_frontier,
+        )
+
+        # Examine whether outbounds
+        crashed = False if self.pbc else (
+                (x < 0)
+                | (x > self.map_width)
+                | (y < 0)
+                | (y > self.map_height)
+        )
 
         # Construct new state
         state = EnvState(
@@ -215,180 +232,11 @@ class LawnMowingFunctional(
             map_obstacle=state.map_obstacle,
             map_farmland=state.map_farmland,
             map_trajectory=state.map_trajectory,
-            map_distance=map_distance,
             crashed=crashed,
             timestep=state.timestep + 1,
         )
 
         return state
-
-    def observation(self, state: EnvState) -> Dict[str, jax.Array]:
-        """Cartpole observation."""
-        x, y = state.position.round().astype(jnp.int32)
-        cos_theta = jnp.cos(state.theta)
-        sin_theta = jnp.sin(state.theta)
-        pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
-        if self.rotate_obs:
-            if self.pbc:
-                # Frontier
-                obs_frontier = self.crop_obs_rotate_pbc(
-                    map=state.map_frontier,
-                    x=x,
-                    y=y,
-                    theta=state.theta,
-                )
-                # Obstacle
-                obs_obstacle = self.crop_obs_rotate_pbc(
-                    map=state.map_obstacle,
-                    x=x,
-                    y=y,
-                    theta=state.theta,
-                )
-            else:
-                # Frontier
-                obs_frontier = self.crop_obs_rotate(
-                    map=state.map_frontier,
-                    x=x,
-                    y=y,
-                    theta=state.theta,
-                    pad_ones=False,
-                )
-                # Obstacle
-                obs_obstacle = self.crop_obs_rotate(
-                    map=state.map_obstacle,
-                    x=x,
-                    y=y,
-                    theta=state.theta,
-                    pad_ones=True,
-                )
-        else:
-            if self.pbc:
-                # Frontier
-                obs_frontier = self.crop_obs_pbc(
-                    map=state.map_frontier,
-                    x=x,
-                    y=y,
-                )
-                # Obstacle
-                obs_obstacle = self.crop_obs_pbc(
-                    map=state.map_obstacle,
-                    x=x,
-                    y=y,
-                )
-            else:
-                # Frontier
-                obs_frontier = self.crop_obs(
-                    map=state.map_frontier,
-                    x=x,
-                    y=y,
-                    pad_ones=False,
-                )
-                # Obstacle
-                obs_obstacle = self.crop_obs(
-                    map=state.map_obstacle,
-                    x=x,
-                    y=y,
-                    pad_ones=True,
-                )
-        obs = jnp.stack([obs_frontier, obs_obstacle], dtype=jnp.float32)
-        obs_dict = {'observation': obs}
-        if self.save_pixels:
-            obs_dict['pixels'] = self.get_render(state)
-        if not self.rotate_obs:
-            obs_dict['pose'] = pose
-        return obs_dict
-
-    def terminal(self, state: EnvState) -> bool:
-        """Checks if the state is terminal."""
-        # terminated = jnp.logical_or(crashed, timestep >= self.max_timestep)
-        terminated = state.timestep >= self.max_timestep
-        return terminated
-
-    def reward(
-            self, state: EnvState, action: jax.Array, next_state: EnvState
-    ) -> jax.Array:
-        """Computes the reward for the state transition using the action."""
-        reward_const = -0.1
-        reward_collision = lax.select(next_state.crashed, -10, 0)
-
-        map_area = self.map_width * self.map_height
-        coverage_t = map_area - state.map_frontier.sum()
-        coverage_tp1 = map_area - next_state.map_frontier.sum()
-        reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_self * self.v_max * self.tau)
-        # coverage_discount = self.r_self * self.v_max * self.tau / 2
-        # reward_coverage = reward_coverage - coverage_discount
-        # reward_coverage = lax.select(reward_coverage == 0, -7, 0)
-        # v_linear, v_angular = self.get_velocity(action)
-        # reward_steer = -jnp.power(v_angular * 10, 2) / 40
-
-        tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
-        tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
-        # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
-        reward_tv_incremental = -(tv_tp1 - tv_t) / (2 * self.v_max * self.tau)
-
-        reward = (
-                reward_const
-                + reward_collision
-                + reward_coverage
-                + reward_tv_incremental
-            # + reward_steer
-            # + reward_tv_global
-        )
-        return reward
-
-    def render_image(
-            self,
-            state: EnvState,
-            render_state: RenderStateType,
-    ) -> tuple[RenderStateType, np.ndarray]:
-        """Renders an image of the state using the render state."""
-        try:
-            import pygame
-            from pygame import gfxdraw
-        except ImportError as e:
-            raise DependencyNotInstalled(
-                "pygame is not installed, run `pip install gymnasium[classic-control]`"
-            ) from e
-        screen, clock = render_state
-
-        img = self.get_render(state)
-        img = img.repeat(5, axis=0).repeat(5, axis=1)
-        img = jax_to_numpy(img)
-
-        surf = pygame.surfarray.make_surface(img)
-        # surf = pygame.transform.flip(surf, False, True)
-
-        screen.blit(surf, (0, 0))
-
-        return (screen, clock), img
-
-    def render_init(
-            self, screen_width: int = 600, screen_height: int = 400
-    ) -> RenderStateType:
-        """Initialises the render state for a screen width and height."""
-        try:
-            import pygame
-        except ImportError as e:
-            raise DependencyNotInstalled(
-                "pygame is not installed, run `pip install gymnasium[classic-control]`"
-            ) from e
-
-        pygame.init()
-        screen = pygame.Surface((screen_width, screen_height))
-        clock = pygame.time.Clock()
-
-        return screen, clock
-
-    def render_close(self, render_state: RenderStateType) -> None:
-        """Closes the render state."""
-        try:
-            import pygame
-        except ImportError as e:
-            raise DependencyNotInstalled(
-                "pygame is not installed, run `pip install gymnasium[classic-control]`"
-            ) from e
-        pygame.display.quit()
-        pygame.quit()
 
     @staticmethod
     @jax.jit
@@ -496,13 +344,182 @@ class LawnMowingFunctional(
         )
         return obs
 
+    def observation(self, state: EnvState) -> Dict[str, jax.Array]:
+        """Cartpole observation."""
+        x, y = state.position.round().astype(jnp.int32)
+        cos_theta = jnp.cos(state.theta)
+        sin_theta = jnp.sin(state.theta)
+        pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
+        if self.rotate_obs:
+            if self.pbc:
+                # Frontier
+                obs_frontier = self.crop_obs_rotate_pbc(
+                    map=state.map_frontier,
+                    x=x,
+                    y=y,
+                    theta=state.theta,
+                )
+                # Obstacle
+                obs_obstacle = self.crop_obs_rotate_pbc(
+                    map=state.map_obstacle,
+                    x=x,
+                    y=y,
+                    theta=state.theta,
+                )
+            else:
+                # Frontier
+                obs_frontier = self.crop_obs_rotate(
+                    map=state.map_frontier,
+                    x=x,
+                    y=y,
+                    theta=state.theta,
+                    pad_ones=False,
+                )
+                # Obstacle
+                obs_obstacle = self.crop_obs_rotate(
+                    map=state.map_obstacle,
+                    x=x,
+                    y=y,
+                    theta=state.theta,
+                    pad_ones=True,
+                )
+        else:
+            if self.pbc:
+                # Frontier
+                obs_frontier = self.crop_obs_pbc(
+                    map=state.map_frontier,
+                    x=x,
+                    y=y,
+                )
+                # Obstacle
+                obs_obstacle = self.crop_obs_pbc(
+                    map=state.map_obstacle,
+                    x=x,
+                    y=y,
+                )
+            else:
+                # Frontier
+                obs_frontier = self.crop_obs(
+                    map=state.map_frontier,
+                    x=x,
+                    y=y,
+                    pad_ones=False,
+                )
+                # Obstacle
+                obs_obstacle = self.crop_obs(
+                    map=state.map_obstacle,
+                    x=x,
+                    y=y,
+                    pad_ones=True,
+                )
+        obs = jnp.stack([obs_frontier, obs_obstacle], dtype=jnp.float32)
+        obs_dict = {'observation': obs}
+        if self.save_pixels:
+            obs_dict['pixels'] = self.get_render(state)
+        if not self.rotate_obs:
+            obs_dict['pose'] = pose
+        return obs_dict
+
+    def terminal(self, state: EnvState) -> bool:
+        """Checks if the state is terminal."""
+        # terminated = jnp.logical_or(crashed, timestep >= self.max_timestep)
+        terminated = state.timestep >= self.max_timestep
+        return terminated
+
+    def reward(
+            self, state: EnvState, action: jax.Array, next_state: EnvState
+    ) -> jax.Array:
+        """Computes the reward for the state transition using the action."""
+        reward_const = -0.1
+        reward_collision = lax.select(next_state.crashed, -10, 0)
+
+        map_area = self.map_width * self.map_height
+        coverage_t = map_area - state.map_frontier.sum()
+        coverage_tp1 = map_area - next_state.map_frontier.sum()
+        reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_self * self.v_max * self.tau) * 2
+        # coverage_discount = self.r_self * self.v_max * self.tau / 2
+        # reward_coverage = reward_coverage - coverage_discount
+        # reward_coverage = lax.select(reward_coverage == 0, -7, 0)
+        # v_linear, v_angular = self.get_velocity(action)
+        # reward_steer = -jnp.power(v_angular * 10, 2) / 40
+
+        tv_t = utils.total_variation(state.map_frontier.astype(dtype=jnp.int32))
+        tv_tp1 = utils.total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
+        # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
+        reward_tv_incremental = -(tv_tp1 - tv_t) / (2 * self.v_max * self.tau)
+
+        reward = (
+                reward_const
+                + reward_collision
+                + reward_coverage
+                + reward_tv_incremental
+            # + reward_steer
+            # + reward_tv_global
+        )
+        return reward
+
+    def render_image(
+            self,
+            state: EnvState,
+            render_state: RenderStateType,
+    ) -> tuple[RenderStateType, np.ndarray]:
+        """Renders an image of the state using the render state."""
+        try:
+            import pygame
+            from pygame import gfxdraw
+        except ImportError as e:
+            raise DependencyNotInstalled(
+                "pygame is not installed, run `pip install gymnasium[classic-control]`"
+            ) from e
+        screen, clock = render_state
+
+        img = self.get_render(state)
+        img = img.repeat(5, axis=0).repeat(5, axis=1)
+        img = jax_to_numpy(img)
+
+        surf = pygame.surfarray.make_surface(img)
+        # surf = pygame.transform.flip(surf, False, True)
+
+        screen.blit(surf, (0, 0))
+
+        return (screen, clock), img
+
+    def render_init(
+            self, screen_width: int = 600, screen_height: int = 400
+    ) -> RenderStateType:
+        """Initialises the render state for a screen width and height."""
+        try:
+            import pygame
+        except ImportError as e:
+            raise DependencyNotInstalled(
+                "pygame is not installed, run `pip install gymnasium[classic-control]`"
+            ) from e
+
+        pygame.init()
+        screen = pygame.Surface((screen_width, screen_height))
+        clock = pygame.time.Clock()
+
+        return screen, clock
+
+    def render_close(self, render_state: RenderStateType) -> None:
+        """Closes the render state."""
+        try:
+            import pygame
+        except ImportError as e:
+            raise DependencyNotInstalled(
+                "pygame is not installed, run `pip install gymnasium[classic-control]`"
+            ) from e
+        pygame.display.quit()
+        pygame.quit()
+
     @staticmethod
     @jax.jit
     def get_render(
             state: EnvState
     ) -> jax.Array:
         # # Mask for obs rectangle
-        # x, y = state.position.round().astype(jnp.int32)
+        x, y = state.position.round().astype(jnp.int32)
+
         # obs_cols = lax.broadcast(
         #     jnp.arange(0, self.map_width),
         #     sizes=[self.map_height]
@@ -553,8 +570,14 @@ class LawnMowingFunctional(
             img
         )
         img = jnp.where(
-            lax.broadcast(state.map_distance, sizes=[3]).transpose(1, 2,
-                                                                   0) <= LawnMowingFunctional.r_self * LawnMowingFunctional.r_self,
+            lax.broadcast(
+                jnp.roll(
+                    LawnMowingFunctional.vision_mask,
+                    shift=(y - LawnMowingFunctional.map_height // 2, x - LawnMowingFunctional.map_width // 2),
+                    axis=(0, 1)
+                ),
+                sizes=[3]
+            ).transpose(1, 2, 0),
             jnp.array([255, 0, 0], dtype=jnp.uint8),
             img
         )
