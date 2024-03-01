@@ -19,7 +19,7 @@ from envx.utils.functional_jax_env import (
 from gymnasium.experimental.wrappers.jax_to_numpy import jax_to_numpy
 from gymnasium.utils import EzPickle
 
-import envx.cpp.lawn_mowing.utils as utils
+from envx.cpp.lawn_mowing import utils
 from envx.utils.pix.jitted import rotate_nearest
 
 
@@ -60,12 +60,9 @@ class LawnMowingFunctional(
     nvec = [4, 9]
 
     vision_mask = (
-                          (lax.broadcast(jnp.arange(0, map_width), sizes=[map_height]) - map_width // 2)
-                          * (lax.broadcast(jnp.arange(0, map_width), sizes=[map_height]) - map_width // 2)
+                          (lax.broadcast(jnp.arange(0, map_width), sizes=[map_height]) - map_width // 2) ** 2
                           + (lax.broadcast(jnp.arange(0, map_height), sizes=[map_width]).swapaxes(0, 1)
-                             - map_height // 2)
-                          * (lax.broadcast(jnp.arange(0, map_height), sizes=[map_width]).swapaxes(0, 1)
-                             - map_height // 2)
+                             - map_height // 2) ** 2
                   ) <= r_self * r_self
 
     def __init__(
@@ -123,9 +120,9 @@ class LawnMowingFunctional(
                 raise ValueError(f"Action type should be continuous, discrete or multi_discrete, got '{action_type}'")
         if pbc:
             if rotate_obs:
-                assert 2 * jnp.sqrt(2) * self.r_obs <= max(self.map_width, self.map_height)
+                assert 2 * jnp.sqrt(2) * self.r_obs <= min(self.map_width, self.map_height)
             else:
-                assert 2 * self.r_obs <= max(self.map_width, self.map_height)
+                assert 2 * self.r_obs <= min(self.map_width, self.map_height)
 
     def initial(self, rng: PRNGKey):
         """Initial state generation."""
