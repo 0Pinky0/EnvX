@@ -575,8 +575,10 @@ class LawnMowingFunctional(
         pygame.display.quit()
         pygame.quit()
 
+    @staticmethod
+    @jax.jit
     def get_render(
-            self, state: EnvState
+            state: EnvState
     ) -> jax.Array:
         x, y = state.position.round().astype(jnp.int32)
         # TV visualize
@@ -586,29 +588,33 @@ class LawnMowingFunctional(
         mask_tv_rows = jnp.pad(mask_tv_rows, pad_width=[[0, 0], [0, 1]], mode='constant')
         mask_tv = jnp.logical_or(mask_tv_cols, mask_tv_rows)
         # Draw covered area and agent
-        img = jnp.ones([self.map_height, self.map_width, 3], dtype=jnp.uint8) * 255
+        img = jnp.ones([LawnMowingFunctional.map_height, LawnMowingFunctional.map_width, 3], dtype=jnp.uint8) * 255
         img = jnp.where(
             lax.broadcast(state.map_frontier, sizes=[3]).transpose(1, 2, 0) == 0,
             jnp.array([65, 227, 72], dtype=jnp.uint8),
             img
         )
-        if True or self.pbc:
-            new_vision_mask = jnp.roll(
-                self.vision_mask,
-                shift=(y - self.map_height // 2, x - self.map_width // 2),
-                axis=(0, 1)
-            )
-        else:
-            new_vision_mask = (
-                                      (lax.broadcast(jnp.arange(0, self.map_width),
-                                                     sizes=[self.map_height]) - x) ** 2
-                                      + (lax.broadcast(jnp.arange(0, self.map_height),
-                                                       sizes=[self.map_width]).swapaxes(0, 1)
-                                         - y) ** 2
-                              ) <= self.r_self * self.r_self
+        # if LawnMowingFunctional.pbc:
+        #     new_vision_mask = jnp.roll(
+        #         LawnMowingFunctional.vision_mask,
+        #         shift=(y - LawnMowingFunctional.map_height // 2, x - LawnMowingFunctional.map_width // 2),
+        #         axis=(0, 1)
+        #     )
+        # else:
+        #     new_vision_mask = (
+        #                               (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_width),
+        #                                              sizes=[LawnMowingFunctional.map_height]) - x) ** 2
+        #                               + (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_height),
+        #                                                sizes=[LawnMowingFunctional.map_width]).swapaxes(0, 1)
+        #                                  - y) ** 2
+        #                       ) <= LawnMowingFunctional.r_self * LawnMowingFunctional.r_self
         img = jnp.where(
             lax.broadcast(
-                new_vision_mask,
+                jnp.roll(
+                    LawnMowingFunctional.vision_mask,
+                    shift=(y - LawnMowingFunctional.map_height // 2, x - LawnMowingFunctional.map_width // 2),
+                    axis=(0, 1)
+                ),
                 sizes=[3]
             ).transpose(1, 2, 0),
             jnp.array([255, 0, 0], dtype=jnp.uint8),

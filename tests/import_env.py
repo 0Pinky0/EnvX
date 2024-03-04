@@ -8,7 +8,7 @@ env = gym.make('LawnMowing',
                save_pixels=True,
                action_type="continuous",
                rotate_obs=True,
-               pbc=True)
+               pbc=False)
 if render:
     env = HumanRendering(env)
 obs, _ = env.reset()
@@ -19,7 +19,7 @@ while True:
     action = env.action_space.sample()
     # action = [2, 0.1]
     obs, reward, done, truncated, _ = env.step(action)
-    # print(reward)
+    print(reward)
     if render:
         env.render()
     if done:
