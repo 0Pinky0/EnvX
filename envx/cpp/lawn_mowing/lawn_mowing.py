@@ -1,6 +1,7 @@
 """Implementation of a Jax-accelerated cartpole environment."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Tuple, NamedTuple, Dict
 
 import jax
@@ -33,6 +34,7 @@ class EnvState(NamedTuple):
     map_trajectory: jax.Array
     crashed: bool
     timestep: int
+    map_id: int
 
 
 RenderStateType = Tuple["pygame.Surface", "pygame.time.Clock"]
@@ -44,13 +46,13 @@ class LawnMowingFunctional(
     tau: float = 0.5
 
     r_self: int = 4
-    r_obs: int = 48
+    r_obs: int = 64
     diag_obs: int = np.ceil(np.sqrt(2) * r_obs).astype(np.int32)
 
     max_timestep: int = 1000
 
-    map_width = 140
-    map_height = 140
+    map_width = 200
+    map_height = 200
 
     screen_width = 600
     screen_height = 600
@@ -64,6 +66,10 @@ class LawnMowingFunctional(
                           + (lax.broadcast(jnp.arange(0, map_height), sizes=[map_width]).swapaxes(0, 1)
                              - map_height // 2) ** 2
                   ) <= r_self * r_self
+
+    farmland_map_num = 52
+
+    farmland_maps = jnp.load(f'{str(Path(__file__).parent.absolute())}/farmland_shapes/farmland_200.npy')
 
     def __init__(
             self,
@@ -138,16 +144,33 @@ class LawnMowingFunctional(
         theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
 
         x, y = position
-        map_frontier = jnp.ones([self.map_height, self.map_width], dtype=jnp.bool_)
-        map_frontier = jnp.where(
-            jnp.roll(
-                self.vision_mask,
-                shift=(y - self.map_height // 2, x - self.map_width // 2),
-                axis=(0, 1)
-            ),
-            False,
-            map_frontier,
-        )
+        map_id = jax.random.randint(key=rng, shape=[1, ], minval=0, maxval=51)[0]
+        _, rng = jax.random.split(rng)
+        map_frontier = self.farmland_maps[map_id]
+        # map_frontier = jnp.ones([self.map_height, self.map_width], dtype=jnp.bool_)
+        if self.pbc:
+            map_frontier = jnp.where(
+                jnp.roll(
+                    self.vision_mask,
+                    shift=(y - self.map_height // 2, x - self.map_width // 2),
+                    axis=(0, 1)
+                ),
+                False,
+                map_frontier,
+            )
+        else:
+            new_vision_mask = (
+                                      (lax.broadcast(jnp.arange(0, self.map_width),
+                                                     sizes=[self.map_height]) - x) ** 2
+                                      + (lax.broadcast(jnp.arange(0, self.map_height),
+                                                       sizes=[self.map_width]).swapaxes(0, 1)
+                                         - y) ** 2
+                              ) <= self.r_self * self.r_self
+            map_frontier = jnp.where(
+                new_vision_mask,
+                False,
+                map_frontier,
+            )
 
         state = EnvState(
             position=position,
@@ -158,6 +181,7 @@ class LawnMowingFunctional(
             map_trajectory=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
             crashed=False,
             timestep=0,
+            map_id=map_id,
         )
         return state
 
@@ -297,6 +321,7 @@ class LawnMowingFunctional(
             map_trajectory=state.map_trajectory,
             crashed=crashed,
             timestep=state.timestep + 1,
+            map_id=state.map_id,
         )
 
         return state
@@ -485,9 +510,15 @@ class LawnMowingFunctional(
 
     def terminal(self, state: EnvState) -> bool:
         """Checks if the state is terminal."""
-        # terminated = jnp.logical_or(crashed, timestep >= self.max_timestep)
-        terminated = state.timestep >= self.max_timestep
-        return terminated
+        judge_out_of_time = state.timestep >= self.max_timestep
+
+        area_total = self.farmland_maps[state.map_id].sum()
+        area_covered = area_total - state.map_frontier.sum()
+        coverage_ratio = area_covered / area_total
+        judge_covered_enough = coverage_ratio > 0.95
+
+        terminated = jnp.logical_or(judge_covered_enough, judge_out_of_time)
+        return terminated  # noqa: Jax traced type can be handled correctly
 
     def reward(
             self, state: EnvState, action: jax.Array, next_state: EnvState
@@ -588,10 +619,19 @@ class LawnMowingFunctional(
         mask_tv_rows = jnp.pad(mask_tv_rows, pad_width=[[0, 0], [0, 1]], mode='constant')
         mask_tv = jnp.logical_or(mask_tv_cols, mask_tv_rows)
         # Draw covered area and agent
+        mask_uncovered = jnp.logical_and(LawnMowingFunctional.farmland_maps[state.map_id], state.map_frontier)
+        mask_uncovered = jnp.logical_not(mask_uncovered)
         img = jnp.ones([LawnMowingFunctional.map_height, LawnMowingFunctional.map_width, 3], dtype=jnp.uint8) * 255
+        ## Old render: all green
+        # img = jnp.where(
+        #     lax.broadcast(state.map_frontier, sizes=[3]).transpose(1, 2, 0) == 0,
+        #     jnp.array([65, 227, 72], dtype=jnp.uint8),
+        #     img
+        # )
+        ## New render: yellow farmland
         img = jnp.where(
-            lax.broadcast(state.map_frontier, sizes=[3]).transpose(1, 2, 0) == 0,
-            jnp.array([65, 227, 72], dtype=jnp.uint8),
+            lax.broadcast(mask_uncovered, sizes=[3]).transpose(1, 2, 0) == 0,
+            jnp.array([255, 215, 0], dtype=jnp.uint8),
             img
         )
         # if LawnMowingFunctional.pbc:
