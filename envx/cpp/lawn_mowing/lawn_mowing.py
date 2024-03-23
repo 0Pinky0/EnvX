@@ -59,7 +59,8 @@ class LawnMowingFunctional(
 
     v_max = 7
     w_max = 1
-    nvec = [4, 9]
+    # nvec = [4, 9]
+    nvec = [4, 21]
 
     vision_mask = (
                           (lax.broadcast(jnp.arange(0, map_width), sizes=[map_height]) - map_width // 2) ** 2
@@ -82,6 +83,7 @@ class LawnMowingFunctional(
             action_type: str = "continuous",
             rotate_obs: bool = False,
             pbc: bool = False,  # Periodic Boundary Conditions, PBC
+            prevent_stiff: bool = False,
             **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -89,6 +91,7 @@ class LawnMowingFunctional(
         self.action_type = action_type
         self.rotate_obs = rotate_obs
         self.pbc = pbc
+        self.prevent_stiff = prevent_stiff
         # Channels: [Frontier(unseen), Obstacles]
         # Future: [Farmland, Trajectory]
         # Define obs space
@@ -278,17 +281,17 @@ class LawnMowingFunctional(
             case "continuous":
                 v_linear, v_angular = action
             case "discrete":
-                action_linear = action // self.nvec[1] + 1
-                linear_size = self.nvec[0] - 1 + 1
+                action_linear = action // self.nvec[1] + self.prevent_stiff
+                linear_size = self.nvec[0] - 1 + self.prevent_stiff
                 v_linear = self.v_max * action_linear / linear_size
                 action_angular = action % self.nvec[1]
                 angular_size = (self.nvec[1] - 1) // 2
-                v_angular = self.w_max * (action_angular - 1 - angular_size) / angular_size
+                v_angular = self.w_max * (action_angular - angular_size) / angular_size
             case "multi_discrete":
                 linear_size = self.nvec[0] - 1
                 v_linear = self.v_max * action[0] / linear_size
                 angular_size = (self.nvec[1] - 1) // 2
-                v_angular = self.w_max * (action[1] - 1 - angular_size) / angular_size
+                v_angular = self.w_max * (action[1] - angular_size) / angular_size
         return v_linear, v_angular  # noqa
 
     def transition(
@@ -354,8 +357,8 @@ class LawnMowingFunctional(
         error = dx // 2
         ystep = lax.select(y1 < y2, 1, -1)
 
-        def bresenham_body(x, val: Tuple[int, float, jax.Array, jax.Array, bool]):
-            y, error, map_frontier, last_position, last_crashed = val
+        def bresenham_body(x, val: Tuple[int, float, jax.Array, jax.Array, jax.Array, bool]):
+            y, error, map_frontier, map_trajectory, last_position, last_crashed = val
             next_position = lax.select(slope, jnp.array([y, x]), jnp.array([x, y]))
             x_aim, y_aim = next_position
             next_agent_mask = (
@@ -395,17 +398,19 @@ class LawnMowingFunctional(
                     False,
                     map_frontier,
                 )
+            map_trajectory = map_trajectory.at[y_aim, x_aim].set(True)
             error -= dy
             y += lax.select(error < 0, ystep, 0)
             error += lax.select(error < 0, dx, 0)
-            return y, error, map_frontier, next_position, next_crashed
+            return y, error, map_frontier, map_trajectory, next_position, next_crashed
 
         map_frontier = state.map_frontier
-        _, _, map_frontier, crashed_position, crashed_when_running = lax.fori_loop(
+        map_trajectory = state.map_trajectory
+        _, _, map_frontier, map_trajectory, crashed_position, crashed_when_running = lax.fori_loop(
             x1,
             x2 + 1,
             bresenham_body,
-            (y1, error, map_frontier, state.position.round().astype(jnp.int32), False)
+            (y1, error, map_frontier, map_trajectory, state.position.round().astype(jnp.int32), False)
         )
         crashed = jnp.logical_or(crashed, crashed_when_running)
         new_position = lax.select(crashed_when_running, crashed_position.astype(jnp.float32), new_position)
@@ -417,7 +422,7 @@ class LawnMowingFunctional(
             map_frontier=map_frontier,
             map_obstacle=state.map_obstacle,
             map_farmland=state.map_farmland,
-            map_trajectory=state.map_trajectory,
+            map_trajectory=map_trajectory,
             crashed=crashed,
             timestep=state.timestep + 1,
             init_map=state.init_map,
@@ -614,7 +619,7 @@ class LawnMowingFunctional(
         area_total = state.init_map.sum()
         area_covered = area_total - state.map_frontier.sum()
         coverage_ratio = area_covered / area_total
-        judge_covered_enough = coverage_ratio > 0.95
+        judge_covered_enough = coverage_ratio >= 0.99
 
         terminated = jnp.logical_or(judge_covered_enough, judge_out_of_time)
         return terminated  # noqa: Jax traced type can be handled correctly
@@ -625,6 +630,10 @@ class LawnMowingFunctional(
         """Computes the reward for the state transition using the action."""
         reward_const = -0.1
         reward_collision = 0 if self.pbc else lax.select(next_state.crashed, -10, 0)
+
+        v_linear, v_angular = self.get_velocity(action)
+        reward_stiff = lax.select(self.prevent_stiff and (v_linear == 0 and v_angular == 0), -10, 0)
+        reward_dynamic = -((jnp.abs(v_angular) / self.w_max) ** 2) / 2
 
         map_area = self.map_width * self.map_height
         coverage_t = map_area - state.map_frontier.sum()
@@ -646,6 +655,8 @@ class LawnMowingFunctional(
                 + reward_collision
                 + reward_coverage
                 + reward_tv_incremental
+                + reward_stiff
+                + reward_dynamic
             # + reward_steer
             # + reward_tv_global
         )
@@ -739,6 +750,12 @@ class LawnMowingFunctional(
             jnp.array([128, 128, 128], dtype=jnp.uint8),
             img
         )
+        # Trajectory
+        img = jnp.where(
+            lax.broadcast(state.map_trajectory, sizes=[3]).transpose(1, 2, 0),
+            jnp.array([0, 128, 255], dtype=jnp.uint8),
+            img
+        )
         # if LawnMowingFunctional.pbc:
         #     new_vision_mask = jnp.roll(
         #         LawnMowingFunctional.vision_mask,
@@ -746,20 +763,17 @@ class LawnMowingFunctional(
         #         axis=(0, 1)
         #     )
         # else:
-        #     new_vision_mask = (
-        #                               (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_width),
-        #                                              sizes=[LawnMowingFunctional.map_height]) - x) ** 2
-        #                               + (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_height),
-        #                                                sizes=[LawnMowingFunctional.map_width]).swapaxes(0, 1)
-        #                                  - y) ** 2
-        #                       ) <= LawnMowingFunctional.r_self * LawnMowingFunctional.r_self
+        new_vision_mask = (
+                                  (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_width),
+                                                 sizes=[LawnMowingFunctional.map_height]) - x) ** 2
+                                  + (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_height),
+                                                   sizes=[LawnMowingFunctional.map_width]).swapaxes(0, 1)
+                                     - y) ** 2
+                          ) <= LawnMowingFunctional.r_self * LawnMowingFunctional.r_self
+        # Agent head
         img = jnp.where(
             lax.broadcast(
-                jnp.roll(
-                    LawnMowingFunctional.vision_mask,
-                    shift=(y - LawnMowingFunctional.map_height // 2, x - LawnMowingFunctional.map_width // 2),
-                    axis=(0, 1)
-                ),
+                new_vision_mask,
                 sizes=[3]
             ).transpose(1, 2, 0),
             jnp.array([255, 0, 0], dtype=jnp.uint8),
