@@ -58,9 +58,9 @@ class LawnMowingFunctional(
     screen_height = 600
 
     v_max = 7
-    w_max = 1
+    w_max = 0.6
     # nvec = [4, 9]
-    nvec = [4, 21]
+    nvec = [4, 9]
 
     vision_mask = (
                           (lax.broadcast(jnp.arange(0, map_width), sizes=[map_height]) - map_width // 2) ** 2
@@ -632,7 +632,9 @@ class LawnMowingFunctional(
         reward_collision = 0 if self.pbc else lax.select(next_state.crashed, -10, 0)
 
         v_linear, v_angular = self.get_velocity(action)
-        reward_stiff = lax.select(self.prevent_stiff and (v_linear == 0 and v_angular == 0), -10, 0)
+        v_linear, v_angular = v_linear / self.v_max, v_angular / self.w_max
+        reward_stiff = (lax.select(jnp.logical_and(v_linear == 0, v_angular == 0), -2.5, 0.)
+                        + lax.select(v_linear == 0, -0.4, 0.))
         reward_dynamic = -((jnp.abs(v_angular) / self.w_max) ** 2) / 2
 
         map_area = self.map_width * self.map_height
@@ -656,7 +658,7 @@ class LawnMowingFunctional(
                 + reward_coverage
                 + reward_tv_incremental
                 + reward_stiff
-                + reward_dynamic
+                # + reward_dynamic
             # + reward_steer
             # + reward_tv_global
         )

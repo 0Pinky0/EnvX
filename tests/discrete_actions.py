@@ -1,4 +1,4 @@
-prevent_stiff = False
+prevent_stiff = True
 nvec = [4, 19]
 v_max = 1
 w_max = 1
