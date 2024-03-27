@@ -732,6 +732,18 @@ class LawnMowingFunctional(
         #     jnp.array([65, 227, 72], dtype=jnp.uint8),
         #     img
         # )
+        new_vision_mask = (
+                                  (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_width),
+                                                 sizes=[LawnMowingFunctional.map_height]) - x) ** 2
+                                  + (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_height),
+                                                   sizes=[LawnMowingFunctional.map_width]).swapaxes(0, 1)
+                                     - y) ** 2
+                          ) <= LawnMowingFunctional.r_vision ** 2
+        img = jnp.where(
+            lax.broadcast(new_vision_mask, sizes=[3]).transpose(1, 2, 0),
+            jnp.array([192, 192, 192], dtype=jnp.uint8),
+            img
+        )
         ## New render: yellow farmland
         img = jnp.where(
             lax.broadcast(mask_uncovered, sizes=[3]).transpose(1, 2, 0) == 0,
@@ -775,17 +787,17 @@ class LawnMowingFunctional(
         #         axis=(0, 1)
         #     )
         # else:
-        new_vision_mask = (
+        new_self_mask = (
                                   (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_width),
                                                  sizes=[LawnMowingFunctional.map_height]) - x) ** 2
                                   + (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_height),
                                                    sizes=[LawnMowingFunctional.map_width]).swapaxes(0, 1)
                                      - y) ** 2
-                          ) <= LawnMowingFunctional.r_self * LawnMowingFunctional.r_self
+                          ) <= LawnMowingFunctional.r_self ** 2
         # Agent head
         img = jnp.where(
             lax.broadcast(
-                new_vision_mask,
+                new_self_mask,
                 sizes=[3]
             ).transpose(1, 2, 0),
             jnp.array([255, 0, 0], dtype=jnp.uint8),
