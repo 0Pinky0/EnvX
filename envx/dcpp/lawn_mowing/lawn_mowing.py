@@ -63,11 +63,16 @@ class LawnMowingFunctional(
     # nvec = [4, 9]
     nvec = [4, 9]
 
+    self_mask = (
+                        (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]) - r_obs) ** 2
+                        + (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]).swapaxes(0, 1)
+                           - r_obs) ** 2
+                ) <= r_self ** 2
     vision_mask = (
-                          (lax.broadcast(jnp.arange(0, map_width), sizes=[map_height]) - map_width // 2) ** 2
-                          + (lax.broadcast(jnp.arange(0, map_height), sizes=[map_width]).swapaxes(0, 1)
-                             - map_height // 2) ** 2
-                  ) <= r_self ** 2
+                          (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]) - r_obs) ** 2
+                          + (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]).swapaxes(0, 1)
+                             - r_obs) ** 2
+                  ) <= r_vision ** 2
 
     num_obstacle_min = 3
     num_obstacle_max = 5
@@ -102,7 +107,7 @@ class LawnMowingFunctional(
             "observation": gym.spaces.Box(
                 low=0.,
                 high=1.,
-                shape=(3, 2 * self.r_obs, 2 * self.r_obs),
+                shape=(6, 2 * self.r_obs, 2 * self.r_obs),
                 dtype=np.float32
             )
         }
@@ -497,6 +502,13 @@ class LawnMowingFunctional(
                 theta=state.theta,
                 pad_ones=False,
             )
+            obs_traj = self.crop_obs_rotate(
+                map=state.map_trajectory,
+                x=x,
+                y=y,
+                theta=state.theta,
+                pad_ones=False,
+            )
         else:
             # Frontier
             obs_frontier = self.crop_obs(
@@ -519,7 +531,24 @@ class LawnMowingFunctional(
                 y=y,
                 pad_ones=False,
             )
-        obs = jnp.stack([obs_frontier, obs_obstacle, obs_pasture], dtype=jnp.float32)
+            obs_traj = self.crop_obs(
+                map=state.map_trajectory,
+                x=x,
+                y=y,
+                pad_ones=False,
+            )
+
+        obs = jnp.stack(
+            [
+                obs_frontier,
+                obs_obstacle,
+                obs_pasture,
+                self.self_mask,
+                self.vision_mask,
+                obs_traj
+            ],
+            dtype=jnp.float32
+        )
         obs_dict = {'observation': obs}
         if self.save_pixels:
             obs_dict['pixels'] = self.get_render(state)
@@ -558,9 +587,9 @@ class LawnMowingFunctional(
         map_area = self.map_width * self.map_height
         coverage_t = map_area - state.map_frontier.sum()
         coverage_tp1 = map_area - next_state.map_frontier.sum()
-        reward_coverage = (coverage_tp1 - coverage_t) * 0.15
+        reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_vision * self.v_max * self.tau)
         num_pasture = state.map_pasture.sum() - next_state.map_pasture.sum()
-        reward_pasture = num_pasture * 1.5
+        reward_pasture = num_pasture * 0.5
         # coverage_discount = self.r_self * self.v_max * self.tau / 2
         # reward_coverage = reward_coverage - coverage_discount
         # reward_coverage = lax.select(reward_coverage == 0, -7, 0)
@@ -570,7 +599,7 @@ class LawnMowingFunctional(
         tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
         tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
         # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
-        reward_tv_incremental = -(tv_tp1 - tv_t) * 0.15
+        reward_tv_incremental = -(tv_tp1 - tv_t) / (self.v_max * self.tau)
 
         reward = (
                 reward_const
