@@ -1,16 +1,16 @@
 import gymnasium as gym
 from gymnasium.wrappers import HumanRendering
-import envx.cpp  # noqa
+import envx.dcpp  # noqa
 
 render = True
 env = gym.make(
-    'LawnMowing',
+    'LawnMowing-v2',
     render_mode='rgb_array' if render else None,
     save_pixels=True,
     action_type="discrete",
     prevent_stiff=False,
     rotate_obs=True,
-    pbc=False,
+    round_vision=True,
 )
 if render:
     env = HumanRendering(env)

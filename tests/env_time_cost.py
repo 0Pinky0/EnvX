@@ -3,13 +3,13 @@ from gymnasium.wrappers import HumanRendering
 import time
 import envx.cpp  # noqa
 
-render = True
+render = False
 env = gym.make('LawnMowing',
                render_mode='rgb_array' if render else None,
                save_pixels=True,
                action_type="discrete",
                rotate_obs=True,
-               pbc=True)
+               pbc=False)
 if render:
     env = HumanRendering(env)
 obs, _ = env.reset()
