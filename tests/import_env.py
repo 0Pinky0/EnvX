@@ -6,11 +6,10 @@ render = True
 env = gym.make(
     'LawnMowing',
     render_mode='rgb_array' if render else None,
-    save_pixels=True,
+    save_pixels=False,
     action_type="discrete",
-    prevent_stiff=False,
+    prevent_stiff=True,
     rotate_obs=True,
-    pbc=False,
 )
 if render:
     env = HumanRendering(env)
