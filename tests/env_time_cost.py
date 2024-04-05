@@ -4,12 +4,13 @@ import time
 import envx.cpp  # noqa
 
 render = False
-env = gym.make('LawnMowing',
-               render_mode='rgb_array' if render else None,
-               save_pixels=True,
-               action_type="discrete",
-               rotate_obs=True,
-               pbc=False)
+env = gym.make(
+    'Farmland-v1',
+    render_mode='rgb_array' if render else None,
+    save_pixels=True,
+    action_type="discrete",
+    rotate_obs=True,
+)
 if render:
     env = HumanRendering(env)
 obs, _ = env.reset()

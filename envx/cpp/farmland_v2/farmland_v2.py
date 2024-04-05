@@ -40,7 +40,7 @@ class EnvState(NamedTuple):
 RenderStateType = Tuple["pygame.Surface", "pygame.time.Clock"]
 
 
-class LawnMowingFunctional(
+class FarmlandV2Functional(
     FuncEnv[EnvState, jax.Array, jax.Array, float, bool, RenderStateType]
 ):
     tau: float = 0.5
@@ -61,7 +61,7 @@ class LawnMowingFunctional(
     v_max = 7.0
     w_max = 1.0
     # nvec = [4, 9]
-    nvec = [8, 17]
+    nvec = [7, 13]
 
     self_mask = (
                         (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]) - r_obs) ** 2
@@ -414,20 +414,20 @@ class LawnMowingFunctional(
     @jax.jit
     def crop_obs(map: jax.Array, x: int, y: int, pad_ones: bool = True) -> jax.Array:
         map_aug = jnp.full(
-            [LawnMowingFunctional.map_height + 2 * LawnMowingFunctional.r_obs,
-             LawnMowingFunctional.map_width + 2 * LawnMowingFunctional.r_obs],
+            [FarmlandV2Functional.map_height + 2 * FarmlandV2Functional.r_obs,
+             FarmlandV2Functional.map_width + 2 * FarmlandV2Functional.r_obs],
             fill_value=pad_ones,
             dtype=jnp.bool_
         )
         map_aug = lax.dynamic_update_slice(
             map_aug,
             map,
-            start_indices=(LawnMowingFunctional.r_obs, LawnMowingFunctional.r_obs)
+            start_indices=(FarmlandV2Functional.r_obs, FarmlandV2Functional.r_obs)
         )
         obs = lax.dynamic_slice(
             map_aug,
             start_indices=(y, x),
-            slice_sizes=(2 * LawnMowingFunctional.r_obs, 2 * LawnMowingFunctional.r_obs)
+            slice_sizes=(2 * FarmlandV2Functional.r_obs, 2 * FarmlandV2Functional.r_obs)
         )
         return obs
 
@@ -435,20 +435,20 @@ class LawnMowingFunctional(
     @jax.jit
     def crop_obs_rotate(map: jax.Array, x: int, y: int, theta: jax.Array, pad_ones: bool = True) -> jax.Array:
         map_aug = jnp.full(
-            [LawnMowingFunctional.map_height + 2 * LawnMowingFunctional.diag_obs,
-             LawnMowingFunctional.map_width + 2 * LawnMowingFunctional.diag_obs],
+            [FarmlandV2Functional.map_height + 2 * FarmlandV2Functional.diag_obs,
+             FarmlandV2Functional.map_width + 2 * FarmlandV2Functional.diag_obs],
             fill_value=pad_ones,
             dtype=jnp.bool_
         )
         map_aug = lax.dynamic_update_slice(
             map_aug,
             map,
-            start_indices=(LawnMowingFunctional.diag_obs, LawnMowingFunctional.diag_obs)
+            start_indices=(FarmlandV2Functional.diag_obs, FarmlandV2Functional.diag_obs)
         )
         obs_aug = lax.dynamic_slice(
             map_aug,
             start_indices=(y, x),
-            slice_sizes=(2 * LawnMowingFunctional.diag_obs, 2 * LawnMowingFunctional.diag_obs)
+            slice_sizes=(2 * FarmlandV2Functional.diag_obs, 2 * FarmlandV2Functional.diag_obs)
         )
         # Transform 2d bool array into 3d float array, meeting plx demands
         obs_aug = lax.broadcast(obs_aug, sizes=[1]).transpose(1, 2, 0).astype(jnp.float32)
@@ -460,9 +460,9 @@ class LawnMowingFunctional(
         obs_aug = obs_aug.squeeze(axis=-1)
         obs = lax.dynamic_slice(
             obs_aug,
-            start_indices=(LawnMowingFunctional.diag_obs - LawnMowingFunctional.r_obs,
-                           LawnMowingFunctional.diag_obs - LawnMowingFunctional.r_obs),
-            slice_sizes=(2 * LawnMowingFunctional.r_obs, 2 * LawnMowingFunctional.r_obs)
+            start_indices=(FarmlandV2Functional.diag_obs - FarmlandV2Functional.r_obs,
+                           FarmlandV2Functional.diag_obs - FarmlandV2Functional.r_obs),
+            slice_sizes=(2 * FarmlandV2Functional.r_obs, 2 * FarmlandV2Functional.r_obs)
         )
         return obs
 
@@ -606,7 +606,7 @@ class LawnMowingFunctional(
             # + reward_steer
             # + reward_tv_global
         )
-        reward = reward / 10
+        # reward = reward / 10
         return reward
 
     def render_image(
@@ -720,7 +720,7 @@ class LawnMowingFunctional(
         # Draw covered area and agent
         mask_covered = jnp.logical_and(state.init_map, state.map_frontier)
         mask_uncovered = jnp.logical_not(mask_covered)
-        img = jnp.ones([LawnMowingFunctional.map_height, LawnMowingFunctional.map_width, 3], dtype=jnp.uint8) * 255
+        img = jnp.ones([FarmlandV2Functional.map_height, FarmlandV2Functional.map_width, 3], dtype=jnp.uint8) * 255
         ## Old render: all green
         # img = jnp.where(
         #     lax.broadcast(state.map_frontier, sizes=[3]).transpose(1, 2, 0) == 0,
@@ -728,12 +728,12 @@ class LawnMowingFunctional(
         #     img
         # )
         new_vision_mask = (
-                                  (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_width),
-                                                 sizes=[LawnMowingFunctional.map_height]) - x) ** 2
-                                  + (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_height),
-                                                   sizes=[LawnMowingFunctional.map_width]).swapaxes(0, 1)
+                                  (lax.broadcast(jnp.arange(0, FarmlandV2Functional.map_width),
+                                                 sizes=[FarmlandV2Functional.map_height]) - x) ** 2
+                                  + (lax.broadcast(jnp.arange(0, FarmlandV2Functional.map_height),
+                                                   sizes=[FarmlandV2Functional.map_width]).swapaxes(0, 1)
                                      - y) ** 2
-                          ) <= LawnMowingFunctional.r_vision ** 2
+                          ) <= FarmlandV2Functional.r_vision ** 2
         img = jnp.where(
             lax.broadcast(new_vision_mask, sizes=[3]).transpose(1, 2, 0),
             jnp.array([192, 192, 192], dtype=jnp.uint8),
@@ -746,7 +746,7 @@ class LawnMowingFunctional(
             img
         )
         # Pasture
-        map_pasture_larger = LawnMowingFunctional.get_map_pasture_larger(state.map_pasture)
+        map_pasture_larger = FarmlandV2Functional.get_map_pasture_larger(state.map_pasture)
         img = jnp.where(
             lax.broadcast(
                 jnp.logical_and(mask_covered, map_pasture_larger),
@@ -783,12 +783,12 @@ class LawnMowingFunctional(
         #     )
         # else:
         new_self_mask = (
-                                  (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_width),
-                                                 sizes=[LawnMowingFunctional.map_height]) - x) ** 2
-                                  + (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_height),
-                                                   sizes=[LawnMowingFunctional.map_width]).swapaxes(0, 1)
+                                (lax.broadcast(jnp.arange(0, FarmlandV2Functional.map_width),
+                                               sizes=[FarmlandV2Functional.map_height]) - x) ** 2
+                                + (lax.broadcast(jnp.arange(0, FarmlandV2Functional.map_height),
+                                                 sizes=[FarmlandV2Functional.map_width]).swapaxes(0, 1)
                                      - y) ** 2
-                          ) <= LawnMowingFunctional.r_self ** 2
+                          ) <= FarmlandV2Functional.r_self ** 2
         # Agent head
         img = jnp.where(
             lax.broadcast(
@@ -813,7 +813,7 @@ class LawnMowingFunctional(
         return img
 
 
-class LawnMowingJaxEnv(FunctionalJaxEnv, EzPickle):
+class FarmlandV2JaxEnv(FunctionalJaxEnv, EzPickle):
     """Jax-based implementation of the CartPole environment."""
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
@@ -822,7 +822,7 @@ class LawnMowingJaxEnv(FunctionalJaxEnv, EzPickle):
         """Constructor for the CartPole where the kwargs are applied to the functional environment."""
         EzPickle.__init__(self, render_mode=render_mode, **kwargs)
 
-        env = LawnMowingFunctional(**kwargs)
+        env = FarmlandV2Functional(**kwargs)
         env.transform(jax.jit)
 
         FunctionalJaxEnv.__init__(
@@ -833,7 +833,7 @@ class LawnMowingJaxEnv(FunctionalJaxEnv, EzPickle):
         )
 
 
-class LawnMowingJaxVectorEnv(FunctionalJaxVectorEnv, EzPickle):
+class FarmlandV2JaxVectorEnv(FunctionalJaxVectorEnv, EzPickle):
     """Jax-based implementation of the vectorized CartPole environment."""
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
@@ -854,7 +854,7 @@ class LawnMowingJaxVectorEnv(FunctionalJaxVectorEnv, EzPickle):
             **kwargs,
         )
 
-        env = LawnMowingFunctional(**kwargs)
+        env = FarmlandV2Functional(**kwargs)
         env.transform(jax.jit)
 
         FunctionalJaxVectorEnv.__init__(

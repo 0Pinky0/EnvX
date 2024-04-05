@@ -9,14 +9,14 @@ gymnasium.envs.registration.register(
 
 gymnasium.envs.registration.register(
     id="Farmland-v1",
-    entry_point="envx.cpp.farmland_v1:LawnMowingJaxEnv",
-    vector_entry_point="envx.cpp.farmland_v1:LawnMowingJaxVectorEnv",
-    max_episode_steps=1000,
+    entry_point="envx.cpp.farmland_v1:FarmlandV1JaxEnv",
+    vector_entry_point="envx.cpp.farmland_v1:FarmlandV1JaxVectorEnv",
+    max_episode_steps=1500,
 )
 
 gymnasium.envs.registration.register(
     id="Farmland-v2",
-    entry_point="envx.cpp.farmland_v2:LawnMowingJaxEnv",
-    vector_entry_point="envx.cpp.farmland_v2:LawnMowingJaxVectorEnv",
+    entry_point="envx.cpp.farmland_v2:FarmlandV2JaxEnv",
+    vector_entry_point="envx.cpp.farmland_v2:FarmlandV2JaxVectorEnv",
     max_episode_steps=1000,
 )
