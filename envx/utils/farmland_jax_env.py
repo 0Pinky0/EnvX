@@ -110,8 +110,7 @@ class FunctionalJaxEnv(gym.Env):
         self.retval_t = retval_tp1
         # print(retval_delta)
         if retval_delta > 0:
-            reward += -3.
-
+            reward += -8.
 
         self.state = next_state
 

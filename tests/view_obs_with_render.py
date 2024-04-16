@@ -3,7 +3,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium.wrappers import HumanRendering
 import envx.cpp
-from envx.cpp.farmland_v2.lawn_mowing import LawnMowingFunctional
+from envx.cpp.pasture.lawn_mowing import LawnMowingFunctional
 
 import pygame
 

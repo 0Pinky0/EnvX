@@ -4,7 +4,7 @@ import envx.cpp  # noqa
 
 render = True
 env = gym.make(
-    'Farmland-v1',
+    'PastureToy',
     render_mode='rgb_array' if render else None,
     save_pixels=False,
     action_type="discrete",

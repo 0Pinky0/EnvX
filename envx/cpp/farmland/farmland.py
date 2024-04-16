@@ -13,7 +13,7 @@ from jax.random import PRNGKey
 import gymnasium as gym
 from gymnasium.error import DependencyNotInstalled
 from gymnasium.experimental.functional import FuncEnv
-from envx.utils.functional_jax_env import (
+from envx.utils.farmland_jax_env import (
     FunctionalJaxEnv,
     FunctionalJaxVectorEnv,
 )
@@ -27,18 +27,20 @@ from envx.utils.pix.jitted import rotate_nearest
 class EnvState(NamedTuple):
     position: jax.Array
     theta: jax.Array
-    # Channels: [Frontier(unseen), Obstacles, Trajectory]
+    # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
     map_frontier: jax.Array
     map_obstacle: jax.Array
+    map_farmland: jax.Array
     map_trajectory: jax.Array
     crashed: bool
     timestep: int
+    init_map: jax.Array
 
 
 RenderStateType = Tuple["pygame.Surface", "pygame.time.Clock"]
 
 
-class LawnMowingFunctional(
+class FarmlandFunctional(
     FuncEnv[EnvState, jax.Array, jax.Array, float, bool, RenderStateType]
 ):
     tau: float = 0.5
@@ -47,24 +49,34 @@ class LawnMowingFunctional(
     r_obs: int = 64
     diag_obs: int = np.ceil(np.sqrt(2) * r_obs).astype(np.int32)
 
-    max_timestep: int = 1000
+    max_timestep: int = 2000
 
-    map_width = 600
-    map_height = 600
+    map_width = 300
+    map_height = map_width
 
     screen_width = 600
     screen_height = 600
 
     v_max = 7
-    w_max = 0.6
+    w_max = 1.0
     # nvec = [4, 9]
-    nvec = [4, 9]
+    nvec = [7, 21]
 
     vision_mask = (
                           (lax.broadcast(jnp.arange(0, map_width), sizes=[map_height]) - map_width // 2) ** 2
                           + (lax.broadcast(jnp.arange(0, map_height), sizes=[map_width]).swapaxes(0, 1)
                              - map_height // 2) ** 2
                   ) <= r_self ** 2
+
+    num_obstacle_min = 3
+    num_obstacle_max = 5
+
+    obstacle_circle_radius_min = 8
+    obstacle_circle_radius_max = 15
+
+    farmland_map_num = 52
+    farmland_maps = jnp.load(
+        f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_shapes/farmland_{map_width}.npy')
 
     def __init__(
             self,
@@ -86,7 +98,7 @@ class LawnMowingFunctional(
             "observation": gym.spaces.Box(
                 low=0.,
                 high=1.,
-                shape=(2, 2 * self.r_obs, 2 * self.r_obs),
+                shape=(3, 2 * self.r_obs, 2 * self.r_obs),
                 dtype=np.float32
             )
         }
@@ -134,7 +146,10 @@ class LawnMowingFunctional(
         theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
 
         x, y = position
-        map_frontier = jnp.ones([self.map_height, self.map_width], dtype=jnp.bool_)
+        map_id = jax.random.randint(key=rng, shape=[1, ], minval=0, maxval=51)[0]
+        _, rng = jax.random.split(rng)
+        map_frontier = self.farmland_maps[map_id]
+        # map_frontier = jnp.ones([self.map_height, self.map_width], dtype=jnp.bool_)
         new_vision_mask = (
                                   (lax.broadcast(jnp.arange(0, self.map_width),
                                                  sizes=[self.map_height]) - x) ** 2
@@ -148,16 +163,99 @@ class LawnMowingFunctional(
             map_frontier,
         )
 
+        num_obstacles = jax.random.randint(
+            key=rng,
+            shape=[1, ],
+            minval=self.num_obstacle_min,
+            maxval=self.num_obstacle_max
+        )[0]
+        _, rng = jax.random.split(rng)
+
         map_obstacle = jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_)
+
+        def fill_obstacle(
+                val: Tuple[jax.Array, jax.Array, jax.Array, jax.Array]
+        ):
+            map_frontier, map_obstacle, obstacle_mask, floor_mask = val
+            map_frontier = jnp.where(
+                floor_mask,
+                False,
+                map_frontier
+            )
+            map_obstacle = jnp.logical_or(map_obstacle, obstacle_mask)
+            return map_frontier, map_obstacle
+
+        def fill_obstacles(i, val: Tuple[jax.Array, jax.Array, jax.Array, PRNGKey]):
+            map_frontier, map_obstacle, position, rng = val
+            x, y = position
+            o_x = jax.random.randint(
+                key=rng,
+                shape=[1, ],
+                minval=0,
+                maxval=self.map_height
+            )[0]
+            _, rng = jax.random.split(rng)
+            o_y = jax.random.randint(
+                key=rng,
+                shape=[1, ],
+                minval=0,
+                maxval=self.map_width
+            )[0]
+            _, rng = jax.random.split(rng)
+            o_r = jax.random.randint(
+                key=rng,
+                shape=[1, ],
+                minval=self.obstacle_circle_radius_min,
+                maxval=self.obstacle_circle_radius_max
+            )[0]
+            _, rng = jax.random.split(rng)
+            obstacle_mask = (
+                                    (lax.broadcast(jnp.arange(0, self.map_width),
+                                                   sizes=[self.map_height]) - o_x) ** 2
+                                    + (lax.broadcast(jnp.arange(0, self.map_height),
+                                                     sizes=[self.map_width]).swapaxes(0, 1)
+                                       - o_y) ** 2
+                            ) <= o_r ** 2
+            # Check if obstacle and agent are stacked
+            agent_mask = (
+                                 (lax.broadcast(jnp.arange(0, self.map_width),
+                                                sizes=[self.map_height]) - x) ** 2
+                                 + (lax.broadcast(jnp.arange(0, self.map_height),
+                                                  sizes=[self.map_width]).swapaxes(0, 1)
+                                    - y) ** 2
+                         ) <= self.r_self ** 2
+            floor_mask = (
+                                 (lax.broadcast(jnp.arange(0, self.map_width),
+                                                sizes=[self.map_height]) - o_x) ** 2
+                                 + (lax.broadcast(jnp.arange(0, self.map_height),
+                                                  sizes=[self.map_width]).swapaxes(0, 1)
+                                    - o_y) ** 2
+                         ) <= (o_r + self.r_self + 1) ** 2
+            map_frontier, map_obstacle = lax.cond(
+                jnp.logical_and(obstacle_mask, agent_mask).any(),
+                lambda kwargs: (kwargs[0], kwargs[1]),
+                fill_obstacle,
+                (map_frontier, map_obstacle, obstacle_mask, floor_mask)
+            )
+            return map_frontier, map_obstacle, position, rng
+
+        map_frontier, map_obstacle, _, rng = lax.fori_loop(
+            0,
+            num_obstacles,
+            fill_obstacles,
+            (map_frontier, map_obstacle, position, rng)
+        )
 
         state = EnvState(
             position=position,
             theta=theta,
             map_frontier=map_frontier,
             map_obstacle=map_obstacle,
-            map_trajectory=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
+            map_farmland=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
+            map_trajectory=jnp.zeros([self.map_height, self.map_width], dtype=jnp.float32),
             crashed=False,
             timestep=0,
+            init_map=map_frontier,
         )
         return state
 
@@ -267,6 +365,8 @@ class LawnMowingFunctional(
             bresenham_body,
             (y1, error, map_frontier, map_trajectory, state.position.round().astype(jnp.int32), False)
         )
+        # map_trajectory = map_trajectory - 0.07 * state.map_trajectory
+        # map_trajectory = jnp.where(map_trajectory < 0.05, 0, map_trajectory)
         crashed = jnp.logical_or(crashed, crashed_when_running)
         new_position = lax.select(crashed_when_running, crashed_position.astype(jnp.float32), new_position)
 
@@ -276,9 +376,11 @@ class LawnMowingFunctional(
             theta=new_theta,
             map_frontier=map_frontier,
             map_obstacle=state.map_obstacle,
+            map_farmland=state.map_farmland,
             map_trajectory=map_trajectory,
             crashed=crashed,
             timestep=state.timestep + 1,
+            init_map=state.init_map,
         )
 
         return state
@@ -287,20 +389,20 @@ class LawnMowingFunctional(
     @jax.jit
     def crop_obs(map: jax.Array, x: int, y: int, pad_ones: bool = True) -> jax.Array:
         map_aug = jnp.full(
-            [LawnMowingFunctional.map_height + 2 * LawnMowingFunctional.r_obs,
-             LawnMowingFunctional.map_width + 2 * LawnMowingFunctional.r_obs],
+            [FarmlandFunctional.map_height + 2 * FarmlandFunctional.r_obs,
+             FarmlandFunctional.map_width + 2 * FarmlandFunctional.r_obs],
             fill_value=pad_ones,
             dtype=jnp.bool_
         )
         map_aug = lax.dynamic_update_slice(
             map_aug,
             map,
-            start_indices=(LawnMowingFunctional.r_obs, LawnMowingFunctional.r_obs)
+            start_indices=(FarmlandFunctional.r_obs, FarmlandFunctional.r_obs)
         )
         obs = lax.dynamic_slice(
             map_aug,
             start_indices=(y, x),
-            slice_sizes=(2 * LawnMowingFunctional.r_obs, 2 * LawnMowingFunctional.r_obs)
+            slice_sizes=(2 * FarmlandFunctional.r_obs, 2 * FarmlandFunctional.r_obs)
         )
         return obs
 
@@ -308,20 +410,20 @@ class LawnMowingFunctional(
     @jax.jit
     def crop_obs_rotate(map: jax.Array, x: int, y: int, theta: jax.Array, pad_ones: bool = True) -> jax.Array:
         map_aug = jnp.full(
-            [LawnMowingFunctional.map_height + 2 * LawnMowingFunctional.diag_obs,
-             LawnMowingFunctional.map_width + 2 * LawnMowingFunctional.diag_obs],
+            [FarmlandFunctional.map_height + 2 * FarmlandFunctional.diag_obs,
+             FarmlandFunctional.map_width + 2 * FarmlandFunctional.diag_obs],
             fill_value=pad_ones,
             dtype=jnp.bool_
         )
         map_aug = lax.dynamic_update_slice(
             map_aug,
             map,
-            start_indices=(LawnMowingFunctional.diag_obs, LawnMowingFunctional.diag_obs)
+            start_indices=(FarmlandFunctional.diag_obs, FarmlandFunctional.diag_obs)
         )
         obs_aug = lax.dynamic_slice(
             map_aug,
             start_indices=(y, x),
-            slice_sizes=(2 * LawnMowingFunctional.diag_obs, 2 * LawnMowingFunctional.diag_obs)
+            slice_sizes=(2 * FarmlandFunctional.diag_obs, 2 * FarmlandFunctional.diag_obs)
         )
         # Transform 2d bool array into 3d float array, meeting plx demands
         obs_aug = lax.broadcast(obs_aug, sizes=[1]).transpose(1, 2, 0).astype(jnp.float32)
@@ -333,9 +435,9 @@ class LawnMowingFunctional(
         obs_aug = obs_aug.squeeze(axis=-1)
         obs = lax.dynamic_slice(
             obs_aug,
-            start_indices=(LawnMowingFunctional.diag_obs - LawnMowingFunctional.r_obs,
-                           LawnMowingFunctional.diag_obs - LawnMowingFunctional.r_obs),
-            slice_sizes=(2 * LawnMowingFunctional.r_obs, 2 * LawnMowingFunctional.r_obs)
+            start_indices=(FarmlandFunctional.diag_obs - FarmlandFunctional.r_obs,
+                           FarmlandFunctional.diag_obs - FarmlandFunctional.r_obs),
+            slice_sizes=(2 * FarmlandFunctional.r_obs, 2 * FarmlandFunctional.r_obs)
         )
         return obs
 
@@ -362,6 +464,13 @@ class LawnMowingFunctional(
                 theta=state.theta,
                 pad_ones=True,
             )
+            obs_traj = self.crop_obs_rotate(
+                map=state.map_trajectory > 0,
+                x=x,
+                y=y,
+                theta=state.theta,
+                pad_ones=False,
+            )
         else:
             # Frontier
             obs_frontier = self.crop_obs(
@@ -377,7 +486,13 @@ class LawnMowingFunctional(
                 y=y,
                 pad_ones=True,
             )
-        obs = jnp.stack([obs_frontier, obs_obstacle], dtype=jnp.float32)
+            obs_traj = self.crop_obs(
+                map=state.map_trajectory > 0,
+                x=x,
+                y=y,
+                pad_ones=False,
+            )
+        obs = jnp.stack([obs_frontier, obs_obstacle, obs_traj], dtype=jnp.float32)
         obs_dict = {'observation': obs}
         if self.save_pixels:
             obs_dict['pixels'] = self.get_render(state)
@@ -389,12 +504,12 @@ class LawnMowingFunctional(
         """Checks if the state is terminal."""
         judge_out_of_time = state.timestep >= self.max_timestep
 
-        area_covered = state.map_frontier.sum()
-        coverage_ratio = 1 - area_covered / (self.map_width * self.map_height)
+        area_total = state.init_map.sum()
+        area_covered = area_total - state.map_frontier.sum()
+        coverage_ratio = area_covered / area_total
         judge_covered_enough = coverage_ratio >= 0.99
 
         terminated = jnp.logical_or(judge_covered_enough, judge_out_of_time)
-
         return terminated  # noqa: Jax traced type can be handled correctly
 
     def reward(
@@ -413,7 +528,7 @@ class LawnMowingFunctional(
         map_area = self.map_width * self.map_height
         coverage_t = map_area - state.map_frontier.sum()
         coverage_tp1 = map_area - next_state.map_frontier.sum()
-        reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_self * self.v_max * self.tau)
+        reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_self * self.v_max * self.tau) * 2
         # coverage_discount = self.r_self * self.v_max * self.tau / 2
         # reward_coverage = reward_coverage - coverage_discount
         # reward_coverage = lax.select(reward_coverage == 0, -7, 0)
@@ -430,7 +545,7 @@ class LawnMowingFunctional(
                 + reward_collision
                 + reward_coverage
                 + reward_tv_incremental
-            # + reward_stiff
+                + reward_stiff
             # + reward_dynamic
             # + reward_steer
             # + reward_tv_global
@@ -453,7 +568,7 @@ class LawnMowingFunctional(
         screen, clock = render_state
 
         img = self.get_render(state)
-        img = img.repeat(1, axis=0).repeat(1, axis=1)
+        # img = img.repeat(5, axis=0).repeat(5, axis=1)
         img = jax_to_numpy(img)
 
         surf = pygame.surfarray.make_surface(img)
@@ -504,11 +619,19 @@ class LawnMowingFunctional(
         mask_tv_rows = jnp.pad(mask_tv_rows, pad_width=[[0, 0], [0, 1]], mode='constant')
         mask_tv = jnp.logical_or(mask_tv_cols, mask_tv_rows)
         # Draw covered area and agent
-        img = jnp.ones([LawnMowingFunctional.map_height, LawnMowingFunctional.map_width, 3], dtype=jnp.uint8) * 255
-        # Old render: all green
+        mask_uncovered = jnp.logical_and(state.init_map, state.map_frontier)
+        mask_uncovered = jnp.logical_not(mask_uncovered)
+        img = jnp.ones([FarmlandFunctional.map_height, FarmlandFunctional.map_width, 3], dtype=jnp.uint8) * 255
+        ## Old render: all green
+        # img = jnp.where(
+        #     lax.broadcast(state.map_frontier, sizes=[3]).transpose(1, 2, 0) == 0,
+        #     jnp.array([65, 227, 72], dtype=jnp.uint8),
+        #     img
+        # )
+        ## New render: yellow farmland
         img = jnp.where(
-            lax.broadcast(state.map_frontier, sizes=[3]).transpose(1, 2, 0) == 0,
-            jnp.array([65, 227, 72], dtype=jnp.uint8),
+            lax.broadcast(mask_uncovered, sizes=[3]).transpose(1, 2, 0) == 0,
+            jnp.array([255, 215, 0], dtype=jnp.uint8),
             img
         )
         # Obstacles
@@ -520,17 +643,23 @@ class LawnMowingFunctional(
         # Trajectory
         img = jnp.where(
             lax.broadcast(state.map_trajectory, sizes=[3]).transpose(1, 2, 0),
-            jnp.array([200, 245, 10], dtype=jnp.uint8),
+            jnp.array([0, 128, 255], dtype=jnp.uint8),
             img
         )
-
+        # if LawnMowingFunctional.pbc:
+        #     new_vision_mask = jnp.roll(
+        #         LawnMowingFunctional.vision_mask,
+        #         shift=(y - LawnMowingFunctional.map_height // 2, x - LawnMowingFunctional.map_width // 2),
+        #         axis=(0, 1)
+        #     )
+        # else:
         new_vision_mask = (
-                                  (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_width),
-                                                 sizes=[LawnMowingFunctional.map_height]) - x) ** 2
-                                  + (lax.broadcast(jnp.arange(0, LawnMowingFunctional.map_height),
-                                                   sizes=[LawnMowingFunctional.map_width]).swapaxes(0, 1)
+                                  (lax.broadcast(jnp.arange(0, FarmlandFunctional.map_width),
+                                                 sizes=[FarmlandFunctional.map_height]) - x) ** 2
+                                  + (lax.broadcast(jnp.arange(0, FarmlandFunctional.map_height),
+                                                   sizes=[FarmlandFunctional.map_width]).swapaxes(0, 1)
                                      - y) ** 2
-                          ) <= LawnMowingFunctional.r_self * LawnMowingFunctional.r_self
+                          ) <= FarmlandFunctional.r_self * FarmlandFunctional.r_self
         # Agent head
         img = jnp.where(
             lax.broadcast(
@@ -555,7 +684,7 @@ class LawnMowingFunctional(
         return img
 
 
-class LawnMowingJaxEnv(FunctionalJaxEnv, EzPickle):
+class FarmlandJaxEnv(FunctionalJaxEnv, EzPickle):
     """Jax-based implementation of the CartPole environment."""
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
@@ -564,7 +693,7 @@ class LawnMowingJaxEnv(FunctionalJaxEnv, EzPickle):
         """Constructor for the CartPole where the kwargs are applied to the functional environment."""
         EzPickle.__init__(self, render_mode=render_mode, **kwargs)
 
-        env = LawnMowingFunctional(**kwargs)
+        env = FarmlandFunctional(**kwargs)
         env.transform(jax.jit)
 
         FunctionalJaxEnv.__init__(
@@ -575,7 +704,7 @@ class LawnMowingJaxEnv(FunctionalJaxEnv, EzPickle):
         )
 
 
-class LawnMowingJaxVectorEnv(FunctionalJaxVectorEnv, EzPickle):
+class FarmlandJaxVectorEnv(FunctionalJaxVectorEnv, EzPickle):
     """Jax-based implementation of the vectorized CartPole environment."""
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
@@ -596,7 +725,7 @@ class LawnMowingJaxVectorEnv(FunctionalJaxVectorEnv, EzPickle):
             **kwargs,
         )
 
-        env = LawnMowingFunctional(**kwargs)
+        env = FarmlandFunctional(**kwargs)
         env.transform(jax.jit)
 
         FunctionalJaxVectorEnv.__init__(

@@ -13,7 +13,7 @@ from jax.random import PRNGKey
 import gymnasium as gym
 from gymnasium.error import DependencyNotInstalled
 from gymnasium.experimental.functional import FuncEnv
-from envx.utils.farmlandv1_jax_env import (
+from envx.utils.functional_jax_env import (
     FunctionalJaxEnv,
     FunctionalJaxVectorEnv,
 )
@@ -30,7 +30,7 @@ class EnvState(NamedTuple):
     # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
     map_frontier: jax.Array
     map_obstacle: jax.Array
-    map_farmland: jax.Array
+    map_pasture: jax.Array
     map_trajectory: jax.Array
     crashed: bool
     timestep: int
@@ -40,16 +40,17 @@ class EnvState(NamedTuple):
 RenderStateType = Tuple["pygame.Surface", "pygame.time.Clock"]
 
 
-class FarmlandV1Functional(
+class PastureFunctional(
     FuncEnv[EnvState, jax.Array, jax.Array, float, bool, RenderStateType]
 ):
     tau: float = 0.5
 
     r_self: int = 4
     r_obs: int = 64
+    r_vision: int = 24
     diag_obs: int = np.ceil(np.sqrt(2) * r_obs).astype(np.int32)
 
-    max_timestep: int = 1500
+    max_timestep: int = 2000
 
     map_width = 300
     map_height = 300
@@ -57,16 +58,21 @@ class FarmlandV1Functional(
     screen_width = 600
     screen_height = 600
 
-    v_max = 7
-    w_max = 0.6
+    v_max = 7.0
+    w_max = 1.0
     # nvec = [4, 9]
-    nvec = [10, 35]
+    nvec = [7, 21]
 
+    self_mask = (
+                        (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]) - r_obs) ** 2
+                        + (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]).swapaxes(0, 1)
+                           - r_obs) ** 2
+                ) <= r_self ** 2
     vision_mask = (
-                          (lax.broadcast(jnp.arange(0, map_width), sizes=[map_height]) - map_width // 2) ** 2
-                          + (lax.broadcast(jnp.arange(0, map_height), sizes=[map_width]).swapaxes(0, 1)
-                             - map_height // 2) ** 2
-                  ) <= r_self ** 2
+                          (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]) - r_obs) ** 2
+                          + (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]).swapaxes(0, 1)
+                             - r_obs) ** 2
+                  ) <= r_vision ** 2
 
     num_obstacle_min = 3
     num_obstacle_max = 5
@@ -74,9 +80,11 @@ class FarmlandV1Functional(
     obstacle_circle_radius_min = 8
     obstacle_circle_radius_max = 15
 
+    pasture_ratio = 0.002
+
     farmland_map_num = 52
-    farmland_maps = jnp.load(
-        f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_shapes/farmland_300.npy')
+    # farmland_maps = jnp.load(f'{str(Path(__file__).parent.absolute())}/farmland_shapes/farmland_300.npy')
+    farmland_maps = jnp.load(f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_shapes/farmland_300.npy')
 
     def __init__(
             self,
@@ -84,6 +92,7 @@ class FarmlandV1Functional(
             action_type: str = "continuous",
             rotate_obs: bool = False,
             prevent_stiff: bool = False,
+            round_vision: bool = False,
             **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -91,6 +100,7 @@ class FarmlandV1Functional(
         self.action_type = action_type
         self.rotate_obs = rotate_obs
         self.prevent_stiff = prevent_stiff
+        self.round_vision = round_vision
         # Channels: [Frontier(unseen), Obstacles]
         # Future: [Farmland, Trajectory]
         # Define obs space
@@ -98,7 +108,7 @@ class FarmlandV1Functional(
             "observation": gym.spaces.Box(
                 low=0.,
                 high=1.,
-                shape=(2, 2 * self.r_obs, 2 * self.r_obs),
+                shape=(4, 2 * self.r_obs, 2 * self.r_obs),
                 dtype=np.float32
             )
         }
@@ -185,7 +195,7 @@ class FarmlandV1Functional(
             map_obstacle = jnp.logical_or(map_obstacle, obstacle_mask)
             return map_frontier, map_obstacle
 
-        def fill_obstacles(i, val: Tuple[jax.Array, jax.Array, jax.Array, PRNGKey]):
+        def fill_obstacles(_, val: Tuple[jax.Array, jax.Array, jax.Array, PRNGKey]):
             map_frontier, map_obstacle, position, rng = val
             x, y = position
             o_x = jax.random.randint(
@@ -246,12 +256,16 @@ class FarmlandV1Functional(
             (map_frontier, map_obstacle, position, rng)
         )
 
+        map_pasture = jax.random.uniform(shape=(self.map_height, self.map_width), key=rng) <= self.pasture_ratio
+        map_pasture = jnp.where(map_frontier, map_pasture, False)
+        _, rng = jax.random.split(rng)
+
         state = EnvState(
             position=position,
             theta=theta,
             map_frontier=map_frontier,
             map_obstacle=map_obstacle,
-            map_farmland=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
+            map_pasture=map_pasture,
             map_trajectory=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
             crashed=False,
             timestep=0,
@@ -332,8 +346,8 @@ class FarmlandV1Functional(
         error = dx // 2
         ystep = lax.select(y1 < y2, 1, -1)
 
-        def bresenham_body(x, val: Tuple[int, float, jax.Array, jax.Array, jax.Array, bool]):
-            y, error, map_frontier, map_trajectory, last_position, last_crashed = val
+        def bresenham_body(x, val: Tuple[int, float, jax.Array, jax.Array, jax.Array, jax.Array, bool]):
+            y, error, map_frontier, map_pasture, map_trajectory, last_position, last_crashed = val
             next_position = lax.select(slope, jnp.array([y, x]), jnp.array([x, y]))
             x_aim, y_aim = next_position
             next_agent_mask = (
@@ -346,8 +360,20 @@ class FarmlandV1Functional(
             next_crashed = jnp.logical_and(next_agent_mask, state.map_obstacle).any()
             next_crashed = jnp.logical_or(last_crashed, next_crashed)
             next_position = lax.select(next_crashed, last_position, next_position)
-            map_frontier = jnp.where(
+            map_pasture = jnp.where(
                 next_agent_mask,
+                False,
+                map_pasture,
+            )
+            next_vision_mask = (
+                                       (lax.broadcast(jnp.arange(0, self.map_width),
+                                                      sizes=[self.map_height]) - x_aim) ** 2
+                                       + (lax.broadcast(jnp.arange(0, self.map_height),
+                                                        sizes=[self.map_width]).swapaxes(0, 1)
+                                          - y_aim) ** 2
+                               ) <= self.r_vision ** 2
+            map_frontier = jnp.where(
+                next_vision_mask,
                 False,
                 map_frontier,
             )
@@ -355,15 +381,16 @@ class FarmlandV1Functional(
             error -= dy
             y += lax.select(error < 0, ystep, 0)
             error += lax.select(error < 0, dx, 0)
-            return y, error, map_frontier, map_trajectory, next_position, next_crashed
+            return y, error, map_frontier, map_pasture, map_trajectory, next_position, next_crashed
 
         map_frontier = state.map_frontier
+        map_pasture = state.map_pasture
         map_trajectory = state.map_trajectory
-        _, _, map_frontier, map_trajectory, crashed_position, crashed_when_running = lax.fori_loop(
+        _, _, map_frontier, map_pasture, map_trajectory, crashed_position, crashed_when_running = lax.fori_loop(
             x1,
             x2 + 1,
             bresenham_body,
-            (y1, error, map_frontier, map_trajectory, state.position.round().astype(jnp.int32), False)
+            (y1, error, map_frontier, map_pasture, map_trajectory, state.position.round().astype(jnp.int32), False)
         )
         crashed = jnp.logical_or(crashed, crashed_when_running)
         new_position = lax.select(crashed_when_running, crashed_position.astype(jnp.float32), new_position)
@@ -374,7 +401,7 @@ class FarmlandV1Functional(
             theta=new_theta,
             map_frontier=map_frontier,
             map_obstacle=state.map_obstacle,
-            map_farmland=state.map_farmland,
+            map_pasture=map_pasture,
             map_trajectory=map_trajectory,
             crashed=crashed,
             timestep=state.timestep + 1,
@@ -387,20 +414,20 @@ class FarmlandV1Functional(
     @jax.jit
     def crop_obs(map: jax.Array, x: int, y: int, pad_ones: bool = True) -> jax.Array:
         map_aug = jnp.full(
-            [FarmlandV1Functional.map_height + 2 * FarmlandV1Functional.r_obs,
-             FarmlandV1Functional.map_width + 2 * FarmlandV1Functional.r_obs],
+            [PastureFunctional.map_height + 2 * PastureFunctional.r_obs,
+             PastureFunctional.map_width + 2 * PastureFunctional.r_obs],
             fill_value=pad_ones,
             dtype=jnp.bool_
         )
         map_aug = lax.dynamic_update_slice(
             map_aug,
             map,
-            start_indices=(FarmlandV1Functional.r_obs, FarmlandV1Functional.r_obs)
+            start_indices=(PastureFunctional.r_obs, PastureFunctional.r_obs)
         )
         obs = lax.dynamic_slice(
             map_aug,
             start_indices=(y, x),
-            slice_sizes=(2 * FarmlandV1Functional.r_obs, 2 * FarmlandV1Functional.r_obs)
+            slice_sizes=(2 * PastureFunctional.r_obs, 2 * PastureFunctional.r_obs)
         )
         return obs
 
@@ -408,20 +435,20 @@ class FarmlandV1Functional(
     @jax.jit
     def crop_obs_rotate(map: jax.Array, x: int, y: int, theta: jax.Array, pad_ones: bool = True) -> jax.Array:
         map_aug = jnp.full(
-            [FarmlandV1Functional.map_height + 2 * FarmlandV1Functional.diag_obs,
-             FarmlandV1Functional.map_width + 2 * FarmlandV1Functional.diag_obs],
+            [PastureFunctional.map_height + 2 * PastureFunctional.diag_obs,
+             PastureFunctional.map_width + 2 * PastureFunctional.diag_obs],
             fill_value=pad_ones,
             dtype=jnp.bool_
         )
         map_aug = lax.dynamic_update_slice(
             map_aug,
             map,
-            start_indices=(FarmlandV1Functional.diag_obs, FarmlandV1Functional.diag_obs)
+            start_indices=(PastureFunctional.diag_obs, PastureFunctional.diag_obs)
         )
         obs_aug = lax.dynamic_slice(
             map_aug,
             start_indices=(y, x),
-            slice_sizes=(2 * FarmlandV1Functional.diag_obs, 2 * FarmlandV1Functional.diag_obs)
+            slice_sizes=(2 * PastureFunctional.diag_obs, 2 * PastureFunctional.diag_obs)
         )
         # Transform 2d bool array into 3d float array, meeting plx demands
         obs_aug = lax.broadcast(obs_aug, sizes=[1]).transpose(1, 2, 0).astype(jnp.float32)
@@ -433,9 +460,9 @@ class FarmlandV1Functional(
         obs_aug = obs_aug.squeeze(axis=-1)
         obs = lax.dynamic_slice(
             obs_aug,
-            start_indices=(FarmlandV1Functional.diag_obs - FarmlandV1Functional.r_obs,
-                           FarmlandV1Functional.diag_obs - FarmlandV1Functional.r_obs),
-            slice_sizes=(2 * FarmlandV1Functional.r_obs, 2 * FarmlandV1Functional.r_obs)
+            start_indices=(PastureFunctional.diag_obs - PastureFunctional.r_obs,
+                           PastureFunctional.diag_obs - PastureFunctional.r_obs),
+            slice_sizes=(2 * PastureFunctional.r_obs, 2 * PastureFunctional.r_obs)
         )
         return obs
 
@@ -445,6 +472,12 @@ class FarmlandV1Functional(
         cos_theta = jnp.cos(state.theta)
         sin_theta = jnp.sin(state.theta)
         pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
+        observed_pasture = jnp.where(
+            jnp.logical_not(state.map_frontier),
+            state.map_pasture,
+            False,
+        )
+        observed_pasture = self.get_map_pasture_larger(observed_pasture)
         if self.rotate_obs:
             # Frontier
             obs_frontier = self.crop_obs_rotate(
@@ -462,6 +495,21 @@ class FarmlandV1Functional(
                 theta=state.theta,
                 pad_ones=True,
             )
+            # Pasture
+            obs_pasture = self.crop_obs_rotate(
+                map=observed_pasture,
+                x=x,
+                y=y,
+                theta=state.theta,
+                pad_ones=False,
+            )
+            obs_traj = self.crop_obs_rotate(
+                map=state.map_trajectory,
+                x=x,
+                y=y,
+                theta=state.theta,
+                pad_ones=False,
+            )
         else:
             # Frontier
             obs_frontier = self.crop_obs(
@@ -477,7 +525,29 @@ class FarmlandV1Functional(
                 y=y,
                 pad_ones=True,
             )
-        obs = jnp.stack([obs_frontier, obs_obstacle], dtype=jnp.float32)
+            # Pasture
+            obs_pasture = self.crop_obs(
+                map=observed_pasture,
+                x=x,
+                y=y,
+                pad_ones=False,
+            )
+            obs_traj = self.crop_obs(
+                map=state.map_trajectory,
+                x=x,
+                y=y,
+                pad_ones=False,
+            )
+
+        obs = jnp.stack(
+            [
+                obs_frontier,
+                obs_obstacle,
+                obs_pasture,
+                obs_traj
+            ],
+            dtype=jnp.float32
+        )
         obs_dict = {'observation': obs}
         if self.save_pixels:
             obs_dict['pixels'] = self.get_render(state)
@@ -494,6 +564,9 @@ class FarmlandV1Functional(
         coverage_ratio = area_covered / area_total
         judge_covered_enough = coverage_ratio >= 0.99
 
+        pasture_covered_enough = state.map_pasture.sum() == 0
+        judge_covered_enough = jnp.logical_and(judge_covered_enough, pasture_covered_enough)
+
         terminated = jnp.logical_or(judge_covered_enough, judge_out_of_time)
         return terminated  # noqa: Jax traced type can be handled correctly
 
@@ -504,37 +577,36 @@ class FarmlandV1Functional(
         reward_const = -0.1
         reward_collision = lax.select(next_state.crashed, -10, 0)
 
-        v_linear, v_angular = self.get_velocity(action)
-        v_linear, v_angular = v_linear / self.v_max, v_angular / self.w_max
-        reward_stiff = (lax.select(jnp.logical_and(v_linear == 0, v_angular == 0), -2.5, 0.)
-                        + lax.select(v_linear == 0, -0.4, 0.))
-        reward_dynamic = -((jnp.abs(v_angular) / self.w_max) ** 2) / 2
+        # v_linear, v_angular = self.get_velocity(action)
+        # v_linear, v_angular = v_linear / self.v_max, v_angular / self.w_max
+        # reward_stiff = (lax.select(jnp.logical_and(v_linear == 0, v_angular == 0), -2.5, 0.)
+        #                 + lax.select(v_linear == 0, -0.4, 0.))
+        # reward_dynamic = -((jnp.abs(v_angular) / self.w_max) ** 2) / 2
 
         map_area = self.map_width * self.map_height
         coverage_t = map_area - state.map_frontier.sum()
         coverage_tp1 = map_area - next_state.map_frontier.sum()
-        reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_self * self.v_max * self.tau) * 2
-        # coverage_discount = self.r_self * self.v_max * self.tau / 2
-        # reward_coverage = reward_coverage - coverage_discount
-        # reward_coverage = lax.select(reward_coverage == 0, -7, 0)
-        # v_linear, v_angular = self.get_velocity(action)
-        # reward_steer = -jnp.power(v_angular * 10, 2) / 40
+        reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_vision * self.v_max * self.tau) * 0.25
+        num_pasture = state.map_pasture.sum() - next_state.map_pasture.sum()
+        reward_pasture = num_pasture * 0.5
 
         tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
         tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
         # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
-        reward_tv_incremental = -(tv_tp1 - tv_t) / (2 * self.v_max * self.tau)
+        reward_tv_incremental = -(tv_tp1 - tv_t) / (self.v_max * self.tau) * 0.25
 
         reward = (
                 reward_const
                 + reward_collision
-                + reward_coverage
-                + reward_tv_incremental
-                + reward_stiff
+                # + reward_coverage
+                # + reward_tv_incremental
+                + reward_pasture
+                # + reward_stiff
             # + reward_dynamic
             # + reward_steer
             # + reward_tv_global
         )
+        # reward = reward / 10
         return reward
 
     def render_image(
@@ -553,7 +625,7 @@ class FarmlandV1Functional(
         screen, clock = render_state
 
         img = self.get_render(state)
-        img = img.repeat(5, axis=0).repeat(5, axis=1)
+        # img = img.repeat(5, axis=0).repeat(5, axis=1)
         img = jax_to_numpy(img)
 
         surf = pygame.surfarray.make_surface(img)
@@ -593,6 +665,48 @@ class FarmlandV1Functional(
 
     @staticmethod
     @jax.jit
+    def get_map_pasture_larger(map_pasture: jax.Array):
+        map_pasture_larger = map_pasture
+        map_pasture_larger = jnp.logical_or(
+            map_pasture_larger,
+            jnp.insert(
+                map_pasture[1:, :],
+                -1,
+                False,
+                axis=0
+            )
+        )
+        map_pasture_larger = jnp.logical_or(
+            map_pasture_larger,
+            jnp.insert(
+                map_pasture[:-1, :],
+                0,
+                False,
+                axis=0
+            )
+        )
+        map_pasture_larger = jnp.logical_or(
+            map_pasture_larger,
+            jnp.insert(
+                map_pasture[:, 1:],
+                -1,
+                False,
+                axis=1
+            )
+        )
+        map_pasture_larger = jnp.logical_or(
+            map_pasture_larger,
+            jnp.insert(
+                map_pasture[:, :-1],
+                0,
+                False,
+                axis=1
+            )
+        )
+        return map_pasture_larger
+
+    @staticmethod
+    @jax.jit
     def get_render(
             state: EnvState
     ) -> jax.Array:
@@ -604,19 +718,49 @@ class FarmlandV1Functional(
         mask_tv_rows = jnp.pad(mask_tv_rows, pad_width=[[0, 0], [0, 1]], mode='constant')
         mask_tv = jnp.logical_or(mask_tv_cols, mask_tv_rows)
         # Draw covered area and agent
-        mask_uncovered = jnp.logical_and(state.init_map, state.map_frontier)
-        mask_uncovered = jnp.logical_not(mask_uncovered)
-        img = jnp.ones([FarmlandV1Functional.map_height, FarmlandV1Functional.map_width, 3], dtype=jnp.uint8) * 255
+        mask_covered = jnp.logical_and(state.init_map, state.map_frontier)
+        mask_uncovered = jnp.logical_not(mask_covered)
+        img = jnp.ones([PastureFunctional.map_height, PastureFunctional.map_width, 3], dtype=jnp.uint8) * 255
         ## Old render: all green
         # img = jnp.where(
         #     lax.broadcast(state.map_frontier, sizes=[3]).transpose(1, 2, 0) == 0,
         #     jnp.array([65, 227, 72], dtype=jnp.uint8),
         #     img
         # )
+        new_vision_mask = (
+                                  (lax.broadcast(jnp.arange(0, PastureFunctional.map_width),
+                                                 sizes=[PastureFunctional.map_height]) - x) ** 2
+                                  + (lax.broadcast(jnp.arange(0, PastureFunctional.map_height),
+                                                   sizes=[PastureFunctional.map_width]).swapaxes(0, 1)
+                                     - y) ** 2
+                          ) <= PastureFunctional.r_vision ** 2
+        img = jnp.where(
+            lax.broadcast(new_vision_mask, sizes=[3]).transpose(1, 2, 0),
+            jnp.array([192, 192, 192], dtype=jnp.uint8),
+            img
+        )
         ## New render: yellow farmland
         img = jnp.where(
             lax.broadcast(mask_uncovered, sizes=[3]).transpose(1, 2, 0) == 0,
             jnp.array([255, 215, 0], dtype=jnp.uint8),
+            img
+        )
+        # Pasture
+        map_pasture_larger = PastureFunctional.get_map_pasture_larger(state.map_pasture)
+        img = jnp.where(
+            lax.broadcast(
+                jnp.logical_and(mask_covered, map_pasture_larger),
+                sizes=[3]
+            ).transpose(1, 2, 0),
+            jnp.array([255, 0, 0], dtype=jnp.uint8),
+            img
+        )
+        img = jnp.where(
+            lax.broadcast(
+                jnp.logical_and(mask_uncovered, map_pasture_larger),
+                sizes=[3]
+            ).transpose(1, 2, 0),
+            jnp.array([64, 255, 64], dtype=jnp.uint8),
             img
         )
         # Obstacles
@@ -638,17 +782,17 @@ class FarmlandV1Functional(
         #         axis=(0, 1)
         #     )
         # else:
-        new_vision_mask = (
-                                  (lax.broadcast(jnp.arange(0, FarmlandV1Functional.map_width),
-                                                 sizes=[FarmlandV1Functional.map_height]) - x) ** 2
-                                  + (lax.broadcast(jnp.arange(0, FarmlandV1Functional.map_height),
-                                                   sizes=[FarmlandV1Functional.map_width]).swapaxes(0, 1)
+        new_self_mask = (
+                                (lax.broadcast(jnp.arange(0, PastureFunctional.map_width),
+                                               sizes=[PastureFunctional.map_height]) - x) ** 2
+                                + (lax.broadcast(jnp.arange(0, PastureFunctional.map_height),
+                                                 sizes=[PastureFunctional.map_width]).swapaxes(0, 1)
                                      - y) ** 2
-                          ) <= FarmlandV1Functional.r_self * FarmlandV1Functional.r_self
+                          ) <= PastureFunctional.r_self ** 2
         # Agent head
         img = jnp.where(
             lax.broadcast(
-                new_vision_mask,
+                new_self_mask,
                 sizes=[3]
             ).transpose(1, 2, 0),
             jnp.array([255, 0, 0], dtype=jnp.uint8),
@@ -669,7 +813,7 @@ class FarmlandV1Functional(
         return img
 
 
-class FarmlandV1JaxEnv(FunctionalJaxEnv, EzPickle):
+class PastureJaxEnv(FunctionalJaxEnv, EzPickle):
     """Jax-based implementation of the CartPole environment."""
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
@@ -678,7 +822,7 @@ class FarmlandV1JaxEnv(FunctionalJaxEnv, EzPickle):
         """Constructor for the CartPole where the kwargs are applied to the functional environment."""
         EzPickle.__init__(self, render_mode=render_mode, **kwargs)
 
-        env = FarmlandV1Functional(**kwargs)
+        env = PastureFunctional(**kwargs)
         env.transform(jax.jit)
 
         FunctionalJaxEnv.__init__(
@@ -689,7 +833,7 @@ class FarmlandV1JaxEnv(FunctionalJaxEnv, EzPickle):
         )
 
 
-class FarmlandV1JaxVectorEnv(FunctionalJaxVectorEnv, EzPickle):
+class PastureJaxVectorEnv(FunctionalJaxVectorEnv, EzPickle):
     """Jax-based implementation of the vectorized CartPole environment."""
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
@@ -710,7 +854,7 @@ class FarmlandV1JaxVectorEnv(FunctionalJaxVectorEnv, EzPickle):
             **kwargs,
         )
 
-        env = FarmlandV1Functional(**kwargs)
+        env = PastureFunctional(**kwargs)
         env.transform(jax.jit)
 
         FunctionalJaxVectorEnv.__init__(

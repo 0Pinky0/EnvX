@@ -2,7 +2,7 @@ import jax
 from jax import lax
 import jax.numpy as jnp
 
-from envx.cpp.farmland_v2.utils import total_variation
+from envx.cpp.pasture.utils import total_variation
 
 
 a = jnp.ones([5, 5])
