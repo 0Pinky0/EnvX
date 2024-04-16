@@ -5,7 +5,7 @@ import envx.cpp  # noqa
 
 render = False
 env = gym.make(
-    'LawnMowing',
+    'Pasture',
     render_mode='rgb_array' if render else None,
     save_pixels=True,
     action_type="discrete",

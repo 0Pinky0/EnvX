@@ -30,7 +30,7 @@ class EnvState(NamedTuple):
     # Channels: [Frontier(unseen), Obstacles, Farmland, Trajectory]
     map_frontier: jax.Array
     map_obstacle: jax.Array
-    map_pasture: jax.Array
+    map_weed: jax.Array
     map_trajectory: jax.Array
     crashed: bool
     timestep: int
@@ -50,10 +50,10 @@ class PastureFunctional(
     r_vision: int = 24
     diag_obs: int = np.ceil(np.sqrt(2) * r_obs).astype(np.int32)
 
-    max_timestep: int = 2000
+    max_timestep: int = 1000
 
-    map_width = 300
-    map_height = 300
+    map_width = 600
+    map_height = map_width
 
     screen_width = 600
     screen_height = 600
@@ -81,10 +81,12 @@ class PastureFunctional(
     obstacle_circle_radius_max = 15
 
     pasture_ratio = 0.002
+    decay_factor = 0.9
 
     farmland_map_num = 52
     # farmland_maps = jnp.load(f'{str(Path(__file__).parent.absolute())}/farmland_shapes/farmland_300.npy')
-    farmland_maps = jnp.load(f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_shapes/farmland_300.npy')
+    farmland_maps = jnp.load(
+        f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_shapes/farmland_{map_width}.npy')
 
     def __init__(
             self,
@@ -265,7 +267,7 @@ class PastureFunctional(
             theta=theta,
             map_frontier=map_frontier,
             map_obstacle=map_obstacle,
-            map_pasture=map_pasture,
+            map_weed=map_pasture,
             map_trajectory=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
             crashed=False,
             timestep=0,
@@ -384,7 +386,7 @@ class PastureFunctional(
             return y, error, map_frontier, map_pasture, map_trajectory, next_position, next_crashed
 
         map_frontier = state.map_frontier
-        map_pasture = state.map_pasture
+        map_pasture = state.map_weed
         map_trajectory = state.map_trajectory
         _, _, map_frontier, map_pasture, map_trajectory, crashed_position, crashed_when_running = lax.fori_loop(
             x1,
@@ -401,7 +403,7 @@ class PastureFunctional(
             theta=new_theta,
             map_frontier=map_frontier,
             map_obstacle=state.map_obstacle,
-            map_pasture=map_pasture,
+            map_weed=map_pasture,
             map_trajectory=map_trajectory,
             crashed=crashed,
             timestep=state.timestep + 1,
@@ -417,7 +419,7 @@ class PastureFunctional(
             [PastureFunctional.map_height + 2 * PastureFunctional.r_obs,
              PastureFunctional.map_width + 2 * PastureFunctional.r_obs],
             fill_value=pad_ones,
-            dtype=jnp.bool_
+            dtype=map.dtype
         )
         map_aug = lax.dynamic_update_slice(
             map_aug,
@@ -438,7 +440,7 @@ class PastureFunctional(
             [PastureFunctional.map_height + 2 * PastureFunctional.diag_obs,
              PastureFunctional.map_width + 2 * PastureFunctional.diag_obs],
             fill_value=pad_ones,
-            dtype=jnp.bool_
+            dtype=map.dtype
         )
         map_aug = lax.dynamic_update_slice(
             map_aug,
@@ -466,18 +468,59 @@ class PastureFunctional(
         )
         return obs
 
+    @staticmethod
+    @jax.jit
+    def weed_apf(src: jax.Array, decay_factor: float) -> jax.Array:
+        src = src.astype(jnp.float32)
+        src = src[jnp.newaxis, jnp.newaxis, :, :]
+        dst = src
+        one_mask = src != 0
+        horizon = jnp.ceil(1 / (1 - decay_factor)).astype(jnp.int32)
+
+        def apf_loop(
+                _,
+                val: tuple[jax.Array, jax.Array, jax.Array, float]
+        ) -> tuple[jax.Array, jax.Array, jax.Array, float]:
+            src, dst, one_mask, decay_factor = val
+            kernel = jnp.array([
+                [0., decay_factor, 0.],
+                [decay_factor, 1., decay_factor],
+                [0., decay_factor, 0.],
+            ])[jnp.newaxis, jnp.newaxis, :, :]
+            src = lax.conv(
+                src,
+                kernel,
+                window_strides=(1, 1),
+                padding='SAME'
+            )
+            src = lax.clamp(0., src, decay_factor)
+            dst = jnp.where(
+                jnp.logical_not(one_mask),
+                src,
+                dst,
+            )
+            one_mask = jnp.logical_or(src != 0, one_mask)
+            src = one_mask.astype(jnp.float32)
+            decay_factor *= decay_factor
+            return src, dst, one_mask, decay_factor
+
+        src, dst, one_mask, decay_factor = lax.fori_loop(0, horizon, apf_loop, (src, dst, one_mask, decay_factor))
+        dst = dst[0, 0]
+        return dst
+
     def observation(self, state: EnvState) -> Dict[str, jax.Array]:
         """Cartpole observation."""
         x, y = state.position.round().astype(jnp.int32)
         cos_theta = jnp.cos(state.theta)
         sin_theta = jnp.sin(state.theta)
         pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
-        observed_pasture = jnp.where(
+        observed_weed = jnp.where(
             jnp.logical_not(state.map_frontier),
-            state.map_pasture,
+            state.map_weed,
             False,
         )
-        observed_pasture = self.get_map_pasture_larger(observed_pasture)
+        # observed_weed = self.get_map_pasture_larger(observed_weed)
+        observed_weed = self.weed_apf(src=observed_weed, decay_factor=self.decay_factor)
         if self.rotate_obs:
             # Frontier
             obs_frontier = self.crop_obs_rotate(
@@ -496,8 +539,8 @@ class PastureFunctional(
                 pad_ones=True,
             )
             # Pasture
-            obs_pasture = self.crop_obs_rotate(
-                map=observed_pasture,
+            obs_weed = self.crop_obs_rotate(
+                map=observed_weed,
                 x=x,
                 y=y,
                 theta=state.theta,
@@ -526,8 +569,8 @@ class PastureFunctional(
                 pad_ones=True,
             )
             # Pasture
-            obs_pasture = self.crop_obs(
-                map=observed_pasture,
+            obs_weed = self.crop_obs(
+                map=observed_weed,
                 x=x,
                 y=y,
                 pad_ones=False,
@@ -543,7 +586,7 @@ class PastureFunctional(
             [
                 obs_frontier,
                 obs_obstacle,
-                obs_pasture,
+                obs_weed,
                 obs_traj
             ],
             dtype=jnp.float32
@@ -564,7 +607,7 @@ class PastureFunctional(
         coverage_ratio = area_covered / area_total
         judge_covered_enough = coverage_ratio >= 0.99
 
-        pasture_covered_enough = state.map_pasture.sum() == 0
+        pasture_covered_enough = state.map_weed.sum() == 0
         judge_covered_enough = jnp.logical_and(judge_covered_enough, pasture_covered_enough)
 
         terminated = jnp.logical_or(judge_covered_enough, judge_out_of_time)
@@ -587,7 +630,7 @@ class PastureFunctional(
         coverage_t = map_area - state.map_frontier.sum()
         coverage_tp1 = map_area - next_state.map_frontier.sum()
         reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_vision * self.v_max * self.tau) * 0.25
-        num_pasture = state.map_pasture.sum() - next_state.map_pasture.sum()
+        num_pasture = state.map_weed.sum() - next_state.map_weed.sum()
         reward_pasture = num_pasture * 0.5
 
         tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
@@ -601,7 +644,7 @@ class PastureFunctional(
                 # + reward_coverage
                 # + reward_tv_incremental
                 + reward_pasture
-                # + reward_stiff
+            # + reward_stiff
             # + reward_dynamic
             # + reward_steer
             # + reward_tv_global
@@ -746,7 +789,7 @@ class PastureFunctional(
             img
         )
         # Pasture
-        map_pasture_larger = PastureFunctional.get_map_pasture_larger(state.map_pasture)
+        map_pasture_larger = PastureFunctional.get_map_pasture_larger(state.map_weed)
         img = jnp.where(
             lax.broadcast(
                 jnp.logical_and(mask_covered, map_pasture_larger),
@@ -787,8 +830,8 @@ class PastureFunctional(
                                                sizes=[PastureFunctional.map_height]) - x) ** 2
                                 + (lax.broadcast(jnp.arange(0, PastureFunctional.map_height),
                                                  sizes=[PastureFunctional.map_width]).swapaxes(0, 1)
-                                     - y) ** 2
-                          ) <= PastureFunctional.r_self ** 2
+                                   - y) ** 2
+                        ) <= PastureFunctional.r_self ** 2
         # Agent head
         img = jnp.where(
             lax.broadcast(

@@ -13,7 +13,7 @@ r_obs = LawnMowingFunctional.r_obs * 2
 window = pygame.display.set_mode((r_obs, r_obs))
 clock = pygame.time.Clock()
 
-env = gym.make('Farmland-v1', rotate_obs=True)
+env = gym.make('Pasture', rotate_obs=True)
 state, _ = env.reset()
 
 while True:

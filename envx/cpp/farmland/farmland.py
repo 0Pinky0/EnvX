@@ -51,7 +51,7 @@ class FarmlandFunctional(
 
     max_timestep: int = 2000
 
-    map_width = 300
+    map_width = 600
     map_height = map_width
 
     screen_width = 600
