@@ -27,7 +27,7 @@ for i in range(1650):
         print(f'{(h, w)}')
         print(f'{(top, bottom, left, right)}')
     b = a[top:bottom, left:right].astype(np.float32)
-    b = cv2.resize(b, (600, 600), interpolation=cv2.INTER_CUBIC)
+    b = cv2.resize(b, (400, 400), interpolation=cv2.INTER_CUBIC)
     b: np.ndarray = b != 0
     np.save(f'./farmland_{i}.npy', b)
     if i == 1649:

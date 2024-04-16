@@ -52,7 +52,7 @@ class PastureFunctional(
 
     max_timestep: int = 10_000
 
-    map_width = 600
+    map_width = 400
     map_height = map_width
 
     screen_width = 600

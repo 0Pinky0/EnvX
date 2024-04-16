@@ -75,6 +75,7 @@ class PastureToyFunctional(
                   ) <= r_vision ** 2
 
     pasture_ratio = 0.002
+    decay_factor = 0.9
 
     def __init__(
             self,
@@ -325,7 +326,7 @@ class PastureToyFunctional(
             [PastureToyFunctional.map_height + 2 * PastureToyFunctional.r_obs,
              PastureToyFunctional.map_width + 2 * PastureToyFunctional.r_obs],
             fill_value=pad_ones,
-            dtype=jnp.bool_
+            dtype=map.dtype
         )
         map_aug = lax.dynamic_update_slice(
             map_aug,
@@ -346,7 +347,7 @@ class PastureToyFunctional(
             [PastureToyFunctional.map_height + 2 * PastureToyFunctional.diag_obs,
              PastureToyFunctional.map_width + 2 * PastureToyFunctional.diag_obs],
             fill_value=pad_ones,
-            dtype=jnp.bool_
+            dtype=map.dtype
         )
         map_aug = lax.dynamic_update_slice(
             map_aug,
@@ -374,18 +375,59 @@ class PastureToyFunctional(
         )
         return obs
 
+    @staticmethod
+    @jax.jit
+    def weed_apf(src: jax.Array, decay_factor: float) -> jax.Array:
+        src = src.astype(jnp.float32)
+        src = src[jnp.newaxis, jnp.newaxis, :, :]
+        dst = src
+        one_mask = src != 0
+        horizon = jnp.ceil(1 / (1 - decay_factor)).astype(jnp.int32)
+
+        def apf_loop(
+                _,
+                val: tuple[jax.Array, jax.Array, jax.Array, float]
+        ) -> tuple[jax.Array, jax.Array, jax.Array, float]:
+            src, dst, one_mask, decay_factor = val
+            kernel = jnp.array([
+                [0., decay_factor, 0.],
+                [decay_factor, 1., decay_factor],
+                [0., decay_factor, 0.],
+            ])[jnp.newaxis, jnp.newaxis, :, :]
+            src = lax.conv(
+                src,
+                kernel,
+                window_strides=(1, 1),
+                padding='SAME'
+            )
+            src = lax.clamp(0., src, decay_factor)
+            dst = jnp.where(
+                jnp.logical_not(one_mask),
+                src,
+                dst,
+            )
+            one_mask = jnp.logical_or(src != 0, one_mask)
+            src = one_mask.astype(jnp.float32)
+            decay_factor *= decay_factor
+            return src, dst, one_mask, decay_factor
+
+        src, dst, one_mask, decay_factor = lax.fori_loop(0, horizon, apf_loop, (src, dst, one_mask, decay_factor))
+        dst = dst[0, 0]
+        return dst
+
     def observation(self, state: EnvState) -> Dict[str, jax.Array]:
         """Cartpole observation."""
         x, y = state.position.round().astype(jnp.int32)
         cos_theta = jnp.cos(state.theta)
         sin_theta = jnp.sin(state.theta)
         pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
-        observed_pasture = jnp.where(
+        observed_weed = jnp.where(
             jnp.logical_not(state.map_frontier),
             state.map_weed,
             False,
         )
-        observed_pasture = self.get_map_weed_larger(observed_pasture)
+        # observed_weed = self.get_map_pasture_larger(observed_weed)
+        observed_weed = self.weed_apf(src=observed_weed, decay_factor=self.decay_factor)
         if self.rotate_obs:
             # Frontier
             obs_frontier = self.crop_obs_rotate(
@@ -404,8 +446,8 @@ class PastureToyFunctional(
                 pad_ones=True,
             )
             # Pasture
-            obs_pasture = self.crop_obs_rotate(
-                map=observed_pasture,
+            obs_weed = self.crop_obs_rotate(
+                map=observed_weed,
                 x=x,
                 y=y,
                 theta=state.theta,
@@ -434,8 +476,8 @@ class PastureToyFunctional(
                 pad_ones=True,
             )
             # Pasture
-            obs_pasture = self.crop_obs(
-                map=observed_pasture,
+            obs_weed = self.crop_obs(
+                map=observed_weed,
                 x=x,
                 y=y,
                 pad_ones=False,
@@ -451,7 +493,7 @@ class PastureToyFunctional(
             [
                 obs_frontier,
                 obs_obstacle,
-                obs_pasture,
+                obs_weed,
                 obs_traj
             ],
             dtype=jnp.float32
