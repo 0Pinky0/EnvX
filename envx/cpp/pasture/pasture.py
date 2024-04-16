@@ -50,7 +50,7 @@ class PastureFunctional(
     r_vision: int = 24
     diag_obs: int = np.ceil(np.sqrt(2) * r_obs).astype(np.int32)
 
-    max_timestep: int = 1000
+    max_timestep: int = 10_000
 
     map_width = 600
     map_height = map_width
@@ -83,7 +83,7 @@ class PastureFunctional(
     pasture_ratio = 0.002
     decay_factor = 0.9
 
-    farmland_map_num = 52
+    farmland_map_num = 1650
     # farmland_maps = jnp.load(f'{str(Path(__file__).parent.absolute())}/farmland_shapes/farmland_300.npy')
     farmland_maps = jnp.load(
         f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_shapes/farmland_{map_width}.npy')
@@ -158,9 +158,12 @@ class PastureFunctional(
         theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
 
         x, y = position
-        map_id = jax.random.randint(key=rng, shape=[1, ], minval=0, maxval=51)[0]
-        _, rng = jax.random.split(rng)
-        map_frontier = self.farmland_maps[map_id]
+        # map_id = jax.random.randint(key=rng, shape=[1, ], minval=0, maxval=51)[0]
+        # _, rng = jax.random.split(rng)
+        map_id = np.random.randint(low=0, high=self.farmland_map_num)
+        map_frontier = jnp.load(
+            f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_v2/1/farmland_{map_id}.npy')
+        # map_frontier = self.farmland_maps[map_id]
         # map_frontier = jnp.ones([self.map_height, self.map_width], dtype=jnp.bool_)
         new_vision_mask = (
                                   (lax.broadcast(jnp.arange(0, self.map_width),

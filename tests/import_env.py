@@ -16,6 +16,7 @@ if render:
 obs, _ = env.reset()
 if render:
     env.render()
+step = 0
 
 while True:
     action = env.action_space.sample()
@@ -26,11 +27,14 @@ while True:
     # v_angular = 9
     # action = (v_angular * 1) + (v_linear * nvec[1])
     obs, reward, done, truncated, _ = env.step(action)
-    print(reward)
+    # print(reward)
+    print(f'step {step} / 10000')
+    step += 1
     if render:
         env.render()
     if done:
         obs, _ = env.reset()
+        step = 0
         if render:
             env.render()
 env.close()
