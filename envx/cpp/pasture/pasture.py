@@ -50,7 +50,7 @@ class PastureFunctional(
     r_vision: int = 24
     diag_obs: int = np.ceil(np.sqrt(2) * r_obs).astype(np.int32)
 
-    max_timestep: int = 10_000
+    max_timestep: int = 4_000
 
     map_width = 400
     map_height = map_width
@@ -85,8 +85,8 @@ class PastureFunctional(
 
     farmland_map_num = 1650
     # farmland_maps = jnp.load(f'{str(Path(__file__).parent.absolute())}/farmland_shapes/farmland_300.npy')
-    farmland_maps = jnp.load(
-        f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_shapes/farmland_{map_width}.npy')
+    # farmland_maps = jnp.load(
+    #     f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_shapes/farmland_{map_width}.npy')
 
     def __init__(
             self,
@@ -633,8 +633,8 @@ class PastureFunctional(
         coverage_t = map_area - state.map_frontier.sum()
         coverage_tp1 = map_area - next_state.map_frontier.sum()
         reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_vision * self.v_max * self.tau) * 0.25
-        num_pasture = state.map_weed.sum() - next_state.map_weed.sum()
-        reward_pasture = num_pasture * 0.5
+        num_weed = state.map_weed.sum() - next_state.map_weed.sum()
+        reward_weed = num_weed * 0.5
 
         tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
         tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
@@ -646,7 +646,7 @@ class PastureFunctional(
                 + reward_collision
                 # + reward_coverage
                 # + reward_tv_incremental
-                + reward_pasture
+                + reward_weed
             # + reward_stiff
             # + reward_dynamic
             # + reward_steer

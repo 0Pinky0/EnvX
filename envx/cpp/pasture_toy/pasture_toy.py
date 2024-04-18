@@ -31,6 +31,7 @@ class EnvState(NamedTuple):
     map_frontier: jax.Array
     map_obstacle: jax.Array
     map_weed: jax.Array
+    observed_weed: jax.Array
     map_trajectory: jax.Array
     crashed: bool
     timestep: int
@@ -50,10 +51,10 @@ class PastureToyFunctional(
     r_vision: int = 24
     diag_obs: int = np.ceil(np.sqrt(2) * r_obs).astype(np.int32)
 
-    max_timestep: int = 100
+    max_timestep: int = 2_000
 
-    map_width = 50
-    map_height = map_width
+    map_width = 100
+    map_height = 300
 
     screen_width = 200
     screen_height = 200
@@ -107,7 +108,7 @@ class PastureToyFunctional(
             obs_dict["pixels"] = gym.spaces.Box(
                 low=0,
                 high=255,
-                shape=(self.map_height, self.map_width, 3),
+                shape=(self.map_width, self.map_height, 3),
                 dtype=np.uint8
             )
         if not rotate_obs:
@@ -135,20 +136,19 @@ class PastureToyFunctional(
 
     def initial(self, rng: PRNGKey):
         """Initial state generation."""
-        x = jax.random.uniform(
-            key=rng, minval=5 * self.r_self, maxval=self.map_height - 5 * self.r_self
-        )
-        _, rng = jax.random.split(rng)
-        y = jax.random.uniform(
-            key=rng, minval=5 * self.r_self, maxval=self.map_width - 5 * self.r_self
-        )
-        _, rng = jax.random.split(rng)
-        position = jnp.stack([x, y])
-        theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
+        # x = jax.random.uniform(
+        #     key=rng, minval=5 * self.r_self, maxval=self.map_height - 5 * self.r_self
+        # )
+        # _, rng = jax.random.split(rng)
+        # y = jax.random.uniform(
+        #     key=rng, minval=5 * self.r_self, maxval=self.map_width - 5 * self.r_self
+        # )
+        # _, rng = jax.random.split(rng)
+        position = jnp.stack([4, 4])
+        theta = jnp.array([jnp.pi / 2])
+        # theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
 
         x, y = position
-        map_id = jax.random.randint(key=rng, shape=[1, ], minval=0, maxval=51)[0]
-        _, rng = jax.random.split(rng)
         map_frontier = jnp.ones([self.map_height, self.map_width], dtype=jnp.bool_)
         new_vision_mask = (
                                   (lax.broadcast(jnp.arange(0, self.map_width),
@@ -169,12 +169,21 @@ class PastureToyFunctional(
         map_weed = jnp.where(map_frontier, map_weed, False)
         _, rng = jax.random.split(rng)
 
+        observed_weed = jnp.where(
+            jnp.logical_not(map_frontier),
+            map_weed,
+            False,
+        )
+        # observed_weed = self.get_map_pasture_larger(observed_weed)
+        observed_weed = self.weed_apf(src=observed_weed, decay_factor=self.decay_factor)
+
         state = EnvState(
             position=position,
             theta=theta,
             map_frontier=map_frontier,
             map_obstacle=map_obstacle,
             map_weed=map_weed,
+            observed_weed=observed_weed,
             map_trajectory=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
             crashed=False,
             timestep=0,
@@ -304,6 +313,15 @@ class PastureToyFunctional(
         crashed = jnp.logical_or(crashed, crashed_when_running)
         new_position = lax.select(crashed_when_running, crashed_position.astype(jnp.float32), new_position)
 
+
+        observed_weed = jnp.where(
+            jnp.logical_not(map_frontier),
+            map_weed,
+            False,
+        )
+        # observed_weed = self.get_map_pasture_larger(observed_weed)
+        observed_weed = self.weed_apf(src=observed_weed, decay_factor=self.decay_factor)
+
         # Construct new state
         state = EnvState(
             position=new_position,
@@ -312,6 +330,7 @@ class PastureToyFunctional(
             map_obstacle=state.map_obstacle,
             map_weed=map_weed,
             map_trajectory=map_trajectory,
+            observed_weed=observed_weed,
             crashed=crashed,
             timestep=state.timestep + 1,
             init_map=state.init_map,
@@ -421,13 +440,6 @@ class PastureToyFunctional(
         cos_theta = jnp.cos(state.theta)
         sin_theta = jnp.sin(state.theta)
         pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
-        observed_weed = jnp.where(
-            jnp.logical_not(state.map_frontier),
-            state.map_weed,
-            False,
-        )
-        # observed_weed = self.get_map_pasture_larger(observed_weed)
-        observed_weed = self.weed_apf(src=observed_weed, decay_factor=self.decay_factor)
         if self.rotate_obs:
             # Frontier
             obs_frontier = self.crop_obs_rotate(
@@ -447,7 +459,7 @@ class PastureToyFunctional(
             )
             # Pasture
             obs_weed = self.crop_obs_rotate(
-                map=observed_weed,
+                map=state.observed_weed,
                 x=x,
                 y=y,
                 theta=state.theta,
@@ -477,7 +489,7 @@ class PastureToyFunctional(
             )
             # Pasture
             obs_weed = self.crop_obs(
-                map=observed_weed,
+                map=state.observed_weed,
                 x=x,
                 y=y,
                 pad_ones=False,
@@ -537,20 +549,27 @@ class PastureToyFunctional(
         coverage_t = map_area - state.map_frontier.sum()
         coverage_tp1 = map_area - next_state.map_frontier.sum()
         reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_vision * self.v_max * self.tau) * 0.25
-        num_pasture = state.map_weed.sum() - next_state.map_weed.sum()
-        reward_pasture = num_pasture * 0.5
+        delta_weed = state.map_weed.sum() - next_state.map_weed.sum()
+        reward_weed = delta_weed * 5.0
 
         tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
         tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
         # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
         reward_tv_incremental = -(tv_tp1 - tv_t) / (self.v_max * self.tau) * 0.25
 
+        x_t, y_t = state.position.round().astype(jnp.int32)
+        x_tp1, y_tp1 = next_state.position.round().astype(jnp.int32)
+        delta_apf = next_state.observed_weed[y_tp1, x_tp1] - state.observed_weed[y_t, x_t]
+        reward_approach_weed = lax.select(delta_apf > 0, delta_apf, 0.) * 5.0
+
+
         reward = (
                 reward_const
                 + reward_collision
-                # + reward_coverage
+                + reward_coverage
                 # + reward_tv_incremental
-                + reward_pasture
+                # + reward_weed
+                # + reward_approach_weed
                 # + reward_stiff
             # + reward_dynamic
             # + reward_steer
