@@ -2,7 +2,7 @@ import numpy as np
 
 import gymnasium as gym
 from gymnasium.wrappers import HumanRendering  # noqa
-import envx.dcpp  # noqa
+import envx.cpp  # noqa
 from envx.cpp.pasture.pasture import PastureFunctional
 
 import pygame
@@ -26,15 +26,15 @@ while True:
     # mask_vision = np.broadcast_to(obs[4], shape=(3, r_obs, r_obs)).transpose(1, 2, 0)
     mask_traj = np.broadcast_to(obs[3], shape=(3, r_obs, r_obs)).transpose(1, 2, 0)
     img = np.ones([r_obs, r_obs, 3], dtype=np.uint8) * np.array([255, 215, 0])
-    img = np.where(np.logical_not(mask_frontier), np.array([255, 255, 255], dtype=np.uint8), img)
-    # img = np.where(mask_vision, np.array([64, 64, 64], dtype=np.uint8), img)
-    # img = np.where(mask_self, np.array([0, 255, 0], dtype=np.uint8), img)
-    img = np.where(mask_obstacle, np.array([0, 0, 255], dtype=np.uint8), img)
-    img = np.where(mask_weed, (1 - mask_weed) * np.array(
+    img = np.where(mask_weed > 0.3, (1 - mask_weed) * np.array(
         [0, 255, 255], dtype=np.uint8
     ) + np.array(
         [255, 0, 0], dtype=np.uint8
     ), img)
+    img = np.where(np.logical_not(mask_frontier), np.array([255, 255, 255], dtype=np.uint8), img)
+    # img = np.where(mask_vision, np.array([64, 64, 64], dtype=np.uint8), img)
+    # img = np.where(mask_self, np.array([0, 255, 0], dtype=np.uint8), img)
+    img = np.where(mask_obstacle, np.array([0, 0, 255], dtype=np.uint8), img)
     img = np.where(mask_traj, np.array([0, 255, 255], dtype=np.uint8), img)
 
     img = img.repeat(scale_up, axis=0).repeat(scale_up, axis=1)

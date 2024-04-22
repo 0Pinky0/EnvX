@@ -22,6 +22,7 @@ from gymnasium.utils import EzPickle
 
 from envx.utils.total_variation import total_variation
 from envx.utils.pix.jitted import rotate_nearest
+from envx.utils.apf_jax import apf
 
 
 class EnvState(NamedTuple):
@@ -261,8 +262,8 @@ class PastureFunctional(
             (map_frontier, map_obstacle, position, rng)
         )
 
-        map_pasture = jax.random.uniform(shape=(self.map_height, self.map_width), key=rng) <= self.pasture_ratio
-        map_pasture = jnp.where(map_frontier, map_pasture, False)
+        map_weed = jax.random.uniform(shape=(self.map_height, self.map_width), key=rng) <= self.pasture_ratio
+        map_weed = jnp.where(map_frontier, map_weed, False)
         _, rng = jax.random.split(rng)
 
         state = EnvState(
@@ -270,7 +271,7 @@ class PastureFunctional(
             theta=theta,
             map_frontier=map_frontier,
             map_obstacle=map_obstacle,
-            map_weed=map_pasture,
+            map_weed=map_weed,
             map_trajectory=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
             crashed=False,
             timestep=0,
@@ -389,13 +390,13 @@ class PastureFunctional(
             return y, error, map_frontier, map_pasture, map_trajectory, next_position, next_crashed
 
         map_frontier = state.map_frontier
-        map_pasture = state.map_weed
+        map_weed = state.map_weed
         map_trajectory = state.map_trajectory
-        _, _, map_frontier, map_pasture, map_trajectory, crashed_position, crashed_when_running = lax.fori_loop(
+        _, _, map_frontier, map_weed, map_trajectory, crashed_position, crashed_when_running = lax.fori_loop(
             x1,
             x2 + 1,
             bresenham_body,
-            (y1, error, map_frontier, map_pasture, map_trajectory, state.position.round().astype(jnp.int32), False)
+            (y1, error, map_frontier, map_weed, map_trajectory, state.position.round().astype(jnp.int32), False)
         )
         crashed = jnp.logical_or(crashed, crashed_when_running)
         new_position = lax.select(crashed_when_running, crashed_position.astype(jnp.float32), new_position)
@@ -406,7 +407,7 @@ class PastureFunctional(
             theta=new_theta,
             map_frontier=map_frontier,
             map_obstacle=state.map_obstacle,
-            map_weed=map_pasture,
+            map_weed=map_weed,
             map_trajectory=map_trajectory,
             crashed=crashed,
             timestep=state.timestep + 1,
@@ -471,46 +472,6 @@ class PastureFunctional(
         )
         return obs
 
-    @staticmethod
-    @jax.jit
-    def weed_apf(src: jax.Array, decay_factor: float) -> jax.Array:
-        src = src.astype(jnp.float32)
-        src = src[jnp.newaxis, jnp.newaxis, :, :]
-        dst = src
-        one_mask = src != 0
-        horizon = jnp.ceil(1 / (1 - decay_factor)).astype(jnp.int32)
-
-        def apf_loop(
-                _,
-                val: tuple[jax.Array, jax.Array, jax.Array, float]
-        ) -> tuple[jax.Array, jax.Array, jax.Array, float]:
-            src, dst, one_mask, decay_factor = val
-            kernel = jnp.array([
-                [0., decay_factor, 0.],
-                [decay_factor, 1., decay_factor],
-                [0., decay_factor, 0.],
-            ])[jnp.newaxis, jnp.newaxis, :, :]
-            src = lax.conv(
-                src,
-                kernel,
-                window_strides=(1, 1),
-                padding='SAME'
-            )
-            src = lax.clamp(0., src, decay_factor)
-            dst = jnp.where(
-                jnp.logical_not(one_mask),
-                src,
-                dst,
-            )
-            one_mask = jnp.logical_or(src != 0, one_mask)
-            src = one_mask.astype(jnp.float32)
-            decay_factor *= decay_factor
-            return src, dst, one_mask, decay_factor
-
-        src, dst, one_mask, decay_factor = lax.fori_loop(0, horizon, apf_loop, (src, dst, one_mask, decay_factor))
-        dst = dst[0, 0]
-        return dst
-
     def observation(self, state: EnvState) -> Dict[str, jax.Array]:
         """Cartpole observation."""
         x, y = state.position.round().astype(jnp.int32)
@@ -523,7 +484,7 @@ class PastureFunctional(
             False,
         )
         # observed_weed = self.get_map_pasture_larger(observed_weed)
-        observed_weed = self.weed_apf(src=observed_weed, decay_factor=self.decay_factor)
+        observed_weed = self.decay_factor ** apf(observed_weed)
         if self.rotate_obs:
             # Frontier
             obs_frontier = self.crop_obs_rotate(

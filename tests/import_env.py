@@ -5,7 +5,7 @@ import numpy as np
 
 render = True
 env = gym.make(
-    'PastureToy',
+    'Pasture',
     render_mode='rgb_array' if render else None,
     save_pixels=False,
     action_type="continuous",
