@@ -274,7 +274,7 @@ class PastureFunctional(
             False,
         )
         observed_weed = apf(observed_weed)
-        observed_weed = lax.select(observed_weed.sum() == 0., jnp.zeros_like(observed_weed), self.decay_factor ** observed_weed)
+        observed_weed = lax.select(observed_weed.sum() == 0., observed_weed, self.decay_factor ** observed_weed)
         observed_weed = jnp.where(observed_weed < self.decay_lowerbound, 0., observed_weed)
 
         state = EnvState(
@@ -419,7 +419,7 @@ class PastureFunctional(
             False,
         )
         observed_weed = apf(observed_weed)
-        observed_weed = lax.select(observed_weed.sum() == 0., jnp.zeros_like(observed_weed), self.decay_factor ** observed_weed)
+        observed_weed = lax.select(observed_weed.sum() == 0., observed_weed, self.decay_factor ** observed_weed)
         observed_weed = jnp.where(observed_weed < self.decay_lowerbound, 0., observed_weed)
 
         # Construct new state
