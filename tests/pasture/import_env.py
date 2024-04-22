@@ -1,10 +1,10 @@
 import gymnasium as gym
 from gymnasium.wrappers import HumanRendering
-import envx.dcpp  # noqa
+import envx.cpp  # noqa
 
 render = True
 env = gym.make(
-    'LawnMowing-v2',
+    'Pasture',
     render_mode='rgb_array' if render else None,
     save_pixels=True,
     action_type="discrete",

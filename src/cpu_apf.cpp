@@ -57,10 +57,10 @@ namespace {
         for (std::int64_t i = 0; i < size_dim0; ++i) {
             for (std::int64_t j = 0; j < size_dim1; ++j) {
                 long aim = get_2d(i, j, size_dim1);
+                out_buf[aim] = 0.;
                 if (map_weed[aim]) {
                     candidates.emplace(i, j, 0.);
                     visited[aim] = true;
-                    out_buf[aim] = 0.;
                 } else {
                     visited[aim] = false;
                 }
