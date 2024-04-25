@@ -118,7 +118,9 @@ class PastureFunctional(
             "observation": gym.spaces.Box(
                 low=0.,
                 high=1.,
-                shape=(20 if self.sgcnn else 4, 2 * self.r_obs, 2 * self.r_obs),
+                shape=(20 if self.sgcnn else 4,
+                       self.sgcnn_size if self.sgcnn else 2 * self.r_obs,
+                       self.sgcnn_size if self.sgcnn else 2 * self.r_obs),
                 dtype=np.float32
             )
         }
