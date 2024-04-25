@@ -10,6 +10,7 @@ env = gym.make(
     save_pixels=True,
     action_type="discrete",
     rotate_obs=True,
+    sgcnn=True,
 )
 if render:
     env = HumanRendering(env)

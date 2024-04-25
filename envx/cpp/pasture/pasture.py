@@ -87,6 +87,9 @@ class PastureFunctional(
     decay_lowerbound = 1e-2
 
     farmland_map_num = 1650
+
+    sgcnn_size = 16
+
     # farmland_maps = jnp.load(f'{str(Path(__file__).parent.absolute())}/farmland_shapes/farmland_300.npy')
     # farmland_maps = jnp.load(
     #     f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_shapes/farmland_{map_width}.npy')
@@ -98,6 +101,7 @@ class PastureFunctional(
             rotate_obs: bool = False,
             prevent_stiff: bool = False,
             round_vision: bool = False,
+            sgcnn: bool = False,
             **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -106,6 +110,7 @@ class PastureFunctional(
         self.rotate_obs = rotate_obs
         self.prevent_stiff = prevent_stiff
         self.round_vision = round_vision
+        self.sgcnn = sgcnn
         # Channels: [Frontier(unseen), Obstacles]
         # Future: [Farmland, Trajectory]
         # Define obs space
@@ -113,7 +118,7 @@ class PastureFunctional(
             "observation": gym.spaces.Box(
                 low=0.,
                 high=1.,
-                shape=(4, 2 * self.r_obs, 2 * self.r_obs),
+                shape=(20 if self.sgcnn else 4, 2 * self.r_obs, 2 * self.r_obs),
                 dtype=np.float32
             )
         }
@@ -438,138 +443,101 @@ class PastureFunctional(
 
         return state
 
-    @staticmethod
-    @jax.jit
-    def crop_obs(map: jax.Array, x: int, y: int, pad_ones: bool = True) -> jax.Array:
-        map_aug = jnp.full(
-            [PastureFunctional.map_height + 2 * PastureFunctional.r_obs,
-             PastureFunctional.map_width + 2 * PastureFunctional.r_obs],
-            fill_value=pad_ones,
-            dtype=map.dtype
-        )
-        map_aug = lax.dynamic_update_slice(
-            map_aug,
-            map,
-            start_indices=(PastureFunctional.r_obs, PastureFunctional.r_obs)
-        )
-        obs = lax.dynamic_slice(
-            map_aug,
-            start_indices=(y, x),
-            slice_sizes=(2 * PastureFunctional.r_obs, 2 * PastureFunctional.r_obs)
-        )
-        return obs
-
-    @staticmethod
-    @jax.jit
-    def crop_obs_rotate(map: jax.Array, x: int, y: int, theta: jax.Array, pad_ones: bool = True) -> jax.Array:
-        map_aug = jnp.full(
-            [PastureFunctional.map_height + 2 * PastureFunctional.diag_obs,
-             PastureFunctional.map_width + 2 * PastureFunctional.diag_obs],
-            fill_value=pad_ones,
-            dtype=map.dtype
-        )
-        map_aug = lax.dynamic_update_slice(
-            map_aug,
-            map,
-            start_indices=(PastureFunctional.diag_obs, PastureFunctional.diag_obs)
-        )
-        obs_aug = lax.dynamic_slice(
-            map_aug,
-            start_indices=(y, x),
-            slice_sizes=(2 * PastureFunctional.diag_obs, 2 * PastureFunctional.diag_obs)
-        )
-        # Transform 2d bool array into 3d float array, meeting plx demands
-        obs_aug = lax.broadcast(obs_aug, sizes=[1]).transpose(1, 2, 0).astype(jnp.float32)
-        obs_aug = rotate_nearest(
-            image=obs_aug,
-            angle=theta[0] - jnp.pi,
-            # mode='constant',
-        )
-        obs_aug = obs_aug.squeeze(axis=-1)
-        obs = lax.dynamic_slice(
-            obs_aug,
-            start_indices=(PastureFunctional.diag_obs - PastureFunctional.r_obs,
-                           PastureFunctional.diag_obs - PastureFunctional.r_obs),
-            slice_sizes=(2 * PastureFunctional.r_obs, 2 * PastureFunctional.r_obs)
-        )
-        return obs
-
     def observation(self, state: EnvState) -> Dict[str, jax.Array]:
         """Cartpole observation."""
         x, y = state.position.round().astype(jnp.int32)
         cos_theta = jnp.cos(state.theta)
         sin_theta = jnp.sin(state.theta)
         pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
-        if self.rotate_obs:
-            # Frontier
-            obs_frontier = self.crop_obs_rotate(
-                map=state.map_frontier,
-                x=x,
-                y=y,
-                theta=state.theta,
-                pad_ones=False,
-            )
-            # Obstacle
-            obs_obstacle = self.crop_obs_rotate(
-                map=state.map_obstacle,
-                x=x,
-                y=y,
-                theta=state.theta,
-                pad_ones=True,
-            )
-            # Pasture
-            obs_weed = self.crop_obs_rotate(
-                map=state.observed_weed,
-                x=x,
-                y=y,
-                theta=state.theta,
-                pad_ones=False,
-            )
-            obs_traj = self.crop_obs_rotate(
-                map=state.map_trajectory,
-                x=x,
-                y=y,
-                theta=state.theta,
-                pad_ones=False,
-            )
-        else:
-            # Frontier
-            obs_frontier = self.crop_obs(
-                map=state.map_frontier,
-                x=x,
-                y=y,
-                pad_ones=False,
-            )
-            # Obstacle
-            obs_obstacle = self.crop_obs(
-                map=state.map_obstacle,
-                x=x,
-                y=y,
-                pad_ones=True,
-            )
-            # Pasture
-            obs_weed = self.crop_obs(
-                map=state.observed_weed,
-                x=x,
-                y=y,
-                pad_ones=False,
-            )
-            obs_traj = self.crop_obs(
-                map=state.map_trajectory,
-                x=x,
-                y=y,
-                pad_ones=False,
-            )
 
         obs = jnp.stack(
             [
-                obs_frontier,
-                obs_obstacle,
-                obs_weed,
-                obs_traj
+                state.map_frontier,
+                state.map_obstacle,
+                state.map_weed,
+                state.map_trajectory,
             ],
             dtype=jnp.float32
         )
+        if self.rotate_obs:
+            obs_aug = jnp.full(
+                [4,
+                 PastureFunctional.map_height + 2 * PastureFunctional.diag_obs,
+                 PastureFunctional.map_width + 2 * PastureFunctional.diag_obs],
+                fill_value=jnp.broadcast_to(jnp.array([0., 1., 0., 0.]), shape=(1, 1, 4)).transpose(2, 0, 1),
+                dtype=jnp.float32
+            )
+            obs_aug = lax.dynamic_update_slice(
+                obs_aug,
+                obs,
+                start_indices=(0, PastureFunctional.diag_obs, PastureFunctional.diag_obs)
+            )
+            obs_aug = lax.dynamic_slice(
+                obs_aug,
+                start_indices=(0, y, x),
+                slice_sizes=(4, 2 * PastureFunctional.diag_obs, 2 * PastureFunctional.diag_obs)
+            )
+            # Transform 2d bool array into 3d float array, meeting plx demands
+            obs_aug = rotate_nearest(
+                image=obs_aug.transpose(1, 2, 0),
+                angle=state.theta[0] - jnp.pi,
+                # mode='constant',
+            ).transpose(2, 0, 1)
+            obs = lax.dynamic_slice(
+                obs_aug,
+                start_indices=(0,
+                               PastureFunctional.diag_obs - PastureFunctional.r_obs,
+                               PastureFunctional.diag_obs - PastureFunctional.r_obs),
+                slice_sizes=(4, 2 * PastureFunctional.r_obs, 2 * PastureFunctional.r_obs)
+            )
+        else:
+            obs_aug = jnp.full(
+                [4,
+                 PastureFunctional.map_height + 2 * PastureFunctional.r_obs,
+                 PastureFunctional.map_width + 2 * PastureFunctional.r_obs],
+                fill_value=jnp.broadcast_to(jnp.array([0., 1., 0., 0.]), shape=(1, 1, 4)).transpose(2, 0, 1),
+                dtype=jnp.float32
+            )
+            obs_aug = lax.dynamic_update_slice(
+                obs_aug,
+                obs,
+                start_indices=(0, PastureFunctional.r_obs, PastureFunctional.r_obs)
+            )
+            obs = lax.dynamic_slice(
+                obs_aug,
+                start_indices=(0, y, x),
+                slice_sizes=(4, 2 * PastureFunctional.r_obs, 2 * PastureFunctional.r_obs)
+            )
+        if self.sgcnn:
+            obs_1 = lax.dynamic_slice(
+                obs,
+                start_indices=(
+                    0, PastureFunctional.r_obs - self.sgcnn_size // 2, PastureFunctional.r_obs - self.sgcnn_size // 2),
+                slice_sizes=(4, self.sgcnn_size, self.sgcnn_size)
+            )
+            obs_ = lax.reduce_window(obs, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
+            obs_2 = lax.dynamic_slice(
+                obs_,
+                start_indices=(
+                    0, PastureFunctional.r_obs - self.sgcnn_size // 2, PastureFunctional.r_obs - self.sgcnn_size // 2),
+                slice_sizes=(4, self.sgcnn_size, self.sgcnn_size)
+            )
+            obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
+            obs_3 = lax.dynamic_slice(
+                obs_,
+                start_indices=(
+                    0, PastureFunctional.r_obs - self.sgcnn_size // 2, PastureFunctional.r_obs - self.sgcnn_size // 2),
+                slice_sizes=(4, self.sgcnn_size, self.sgcnn_size)
+            )
+            obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
+            obs_4 = lax.dynamic_slice(
+                obs_,
+                start_indices=(
+                    0, PastureFunctional.r_obs - self.sgcnn_size // 2, PastureFunctional.r_obs - self.sgcnn_size // 2),
+                slice_sizes=(4, self.sgcnn_size, self.sgcnn_size)
+            )
+            obs_5 = jax.image.resize(obs_aug, (4, 16, 16), method='bilinear')
+            obs = lax.concatenate([obs_1, obs_2, obs_3, obs_4, obs_5], dimension=0)
         obs_dict = {'observation': obs}
         if self.save_pixels:
             obs_dict['pixels'] = self.get_render(state)
