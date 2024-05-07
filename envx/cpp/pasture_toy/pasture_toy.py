@@ -566,10 +566,10 @@ class PastureToyFunctional(
         reward = (
                 reward_const
                 + reward_collision
-                + reward_coverage
+                # + reward_coverage
                 # + reward_tv_incremental
-                # + reward_weed
-                # + reward_approach_weed
+                + reward_weed
+                + reward_approach_weed
                 # + reward_stiff
             # + reward_dynamic
             # + reward_steer
@@ -594,7 +594,7 @@ class PastureToyFunctional(
         screen, clock = render_state
 
         img = self.get_render(state)
-        # img = img.repeat(5, axis=0).repeat(5, axis=1)
+        img = img.repeat(3, axis=0).repeat(3, axis=1)
         img = jax_to_numpy(img)
 
         surf = pygame.surfarray.make_surface(img)

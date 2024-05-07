@@ -35,6 +35,7 @@ class EnvState(NamedTuple):
     observed_weed: jax.Array
     map_trajectory: jax.Array
     crashed: bool
+    crash_count: int
     timestep: int
     init_map: jax.Array
 
@@ -102,6 +103,8 @@ class PastureFunctional(
             prevent_stiff: bool = False,
             round_vision: bool = False,
             sgcnn: bool = False,
+            use_traj: bool = False,
+            triangle_obs: bool = False,
             **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -110,15 +113,18 @@ class PastureFunctional(
         self.rotate_obs = rotate_obs
         self.prevent_stiff = prevent_stiff
         self.round_vision = round_vision
+        self.use_traj = use_traj
         self.sgcnn = sgcnn
+        self.triangle_obs = triangle_obs
         # Channels: [Frontier(unseen), Obstacles]
         # Future: [Farmland, Trajectory]
         # Define obs space
+        num_channels = 4 if self.use_traj else 3
         obs_dict = {
             "observation": gym.spaces.Box(
                 low=0.,
                 high=1.,
-                shape=(20 if self.sgcnn else 4,
+                shape=(4 * num_channels if self.sgcnn else num_channels,
                        self.sgcnn_size if self.sgcnn else 2 * self.r_obs,
                        self.sgcnn_size if self.sgcnn else 2 * self.r_obs),
                 dtype=np.float32
@@ -293,6 +299,7 @@ class PastureFunctional(
             observed_weed=observed_weed,
             map_trajectory=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
             crashed=False,
+            crash_count=0,
             timestep=0,
             init_map=map_frontier,
         )
@@ -429,6 +436,8 @@ class PastureFunctional(
         observed_weed = lax.select(observed_weed.sum() == 0., observed_weed, self.decay_factor ** observed_weed)
         observed_weed = jnp.where(observed_weed < self.decay_lowerbound, 0., observed_weed)
 
+        crash_count = lax.select(crashed, state.crash_count + 1, 0)
+
         # Construct new state
         state = EnvState(
             position=new_position,
@@ -439,6 +448,7 @@ class PastureFunctional(
             observed_weed=observed_weed,
             map_trajectory=map_trajectory,
             crashed=crashed,
+            crash_count=crash_count,
             timestep=state.timestep + 1,
             init_map=state.init_map,
         )
@@ -457,29 +467,69 @@ class PastureFunctional(
                 state.map_frontier,
                 state.map_obstacle,
                 state.map_weed,
-                state.map_trajectory,
+                # state.map_trajectory,
             ],
             dtype=jnp.float32
         )
+        num_channels = 4 if self.use_traj else 3
+        init_val = [0., 1., 0.]
+        if self.use_traj:
+            init_val.append(0.)
         if self.rotate_obs:
+            # if self.sgcnn:
+            #     map_diag = np.ceil(
+            #         np.sqrt(self.map_height ** 2 + self.map_width ** 2)
+            #     ).astype(np.int32)
+            #     obs_aug_size = 2 * map_diag - 1
+            #     obs_aug = jnp.full(
+            #         [num_channels,
+            #          obs_aug_size,
+            #          obs_aug_size],
+            #         fill_value=jnp.broadcast_to(jnp.array(init_val), shape=(1, 1, num_channels)).transpose(2, 0, 1),
+            #         dtype=jnp.float32
+            #     )
+            #     obs_aug = lax.dynamic_update_slice(
+            #         obs_aug,
+            #         obs,
+            #         start_indices=(0, map_diag - y, map_diag - x)
+            #     )
+            #     # obs_aug = lax.dynamic_slice(
+            #     #     obs_aug,
+            #     #     start_indices=(0, y, x),
+            #     #     slice_sizes=(num_channels, 2 * self.diag_obs, 2 * self.diag_obs)
+            #     # )
+            #     # Transform 2d bool array into 3d float array, meeting pix demands
+            #     obs_aug = rotate_nearest(
+            #         image=obs_aug.transpose(1, 2, 0),
+            #         angle=state.theta[0] - jnp.pi,
+            #         # mode='constant',
+            #     ).transpose(2, 0, 1)
+            #     obs = lax.dynamic_slice(
+            #         obs_aug,
+            #         start_indices=(0,
+            #                        map_diag - self.r_obs,
+            #                        map_diag - self.r_obs),
+            #         slice_sizes=(num_channels, 2 * self.r_obs, 2 * self.r_obs)
+            #     )
+            # else:
             obs_aug = jnp.full(
-                [4,
-                 PastureFunctional.map_height + 2 * PastureFunctional.diag_obs,
-                 PastureFunctional.map_width + 2 * PastureFunctional.diag_obs],
-                fill_value=jnp.broadcast_to(jnp.array([0., 1., 0., 0.]), shape=(1, 1, 4)).transpose(2, 0, 1),
+                [num_channels,
+                 self.map_height + 2 * self.diag_obs,
+                 self.map_width + 2 * self.diag_obs],
+                fill_value=jnp.broadcast_to(jnp.array(init_val), shape=(1, 1, num_channels)).transpose(2, 0, 1),
                 dtype=jnp.float32
             )
             obs_aug = lax.dynamic_update_slice(
                 obs_aug,
                 obs,
-                start_indices=(0, PastureFunctional.diag_obs, PastureFunctional.diag_obs)
+                start_indices=(0, self.diag_obs, self.diag_obs)
             )
             obs_aug = lax.dynamic_slice(
                 obs_aug,
                 start_indices=(0, y, x),
-                slice_sizes=(4, 2 * PastureFunctional.diag_obs, 2 * PastureFunctional.diag_obs)
+                slice_sizes=(num_channels, 2 * self.diag_obs, 2 * self.diag_obs)
             )
-            # Transform 2d bool array into 3d float array, meeting plx demands
+            # Transform 2d bool array into 3d float array, meeting pix demands
             obs_aug = rotate_nearest(
                 image=obs_aug.transpose(1, 2, 0),
                 angle=state.theta[0] - jnp.pi,
@@ -488,58 +538,73 @@ class PastureFunctional(
             obs = lax.dynamic_slice(
                 obs_aug,
                 start_indices=(0,
-                               PastureFunctional.diag_obs - PastureFunctional.r_obs,
-                               PastureFunctional.diag_obs - PastureFunctional.r_obs),
-                slice_sizes=(4, 2 * PastureFunctional.r_obs, 2 * PastureFunctional.r_obs)
+                               self.diag_obs - self.r_obs,
+                               self.diag_obs - self.r_obs),
+                slice_sizes=(num_channels, 2 * self.r_obs, 2 * self.r_obs)
             )
         else:
             obs_aug = jnp.full(
-                [4,
-                 PastureFunctional.map_height + 2 * PastureFunctional.r_obs,
-                 PastureFunctional.map_width + 2 * PastureFunctional.r_obs],
-                fill_value=jnp.broadcast_to(jnp.array([0., 1., 0., 0.]), shape=(1, 1, 4)).transpose(2, 0, 1),
+                [num_channels,
+                 self.map_height + 2 * self.r_obs,
+                 self.map_width + 2 * self.r_obs],
+                fill_value=jnp.broadcast_to(jnp.array(init_val), shape=(1, 1, num_channels)).transpose(2, 0, 1),
                 dtype=jnp.float32
             )
             obs_aug = lax.dynamic_update_slice(
                 obs_aug,
                 obs,
-                start_indices=(0, PastureFunctional.r_obs, PastureFunctional.r_obs)
+                start_indices=(0, self.r_obs, self.r_obs)
             )
             obs = lax.dynamic_slice(
                 obs_aug,
                 start_indices=(0, y, x),
-                slice_sizes=(4, 2 * PastureFunctional.r_obs, 2 * PastureFunctional.r_obs)
+                slice_sizes=(num_channels, 2 * self.r_obs, 2 * self.r_obs)
             )
         if self.sgcnn:
             obs_1 = lax.dynamic_slice(
                 obs,
                 start_indices=(
-                    0, PastureFunctional.r_obs - self.sgcnn_size // 2, PastureFunctional.r_obs - self.sgcnn_size // 2),
-                slice_sizes=(4, self.sgcnn_size, self.sgcnn_size)
+                    0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
+                slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
             )
             obs_ = lax.reduce_window(obs, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
             obs_2 = lax.dynamic_slice(
                 obs_,
                 start_indices=(
-                    0, PastureFunctional.r_obs - self.sgcnn_size // 2, PastureFunctional.r_obs - self.sgcnn_size // 2),
-                slice_sizes=(4, self.sgcnn_size, self.sgcnn_size)
+                    0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
+                slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
             )
             obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
             obs_3 = lax.dynamic_slice(
                 obs_,
                 start_indices=(
-                    0, PastureFunctional.r_obs - self.sgcnn_size // 2, PastureFunctional.r_obs - self.sgcnn_size // 2),
-                slice_sizes=(4, self.sgcnn_size, self.sgcnn_size)
+                    0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
+                slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
             )
             obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
             obs_4 = lax.dynamic_slice(
                 obs_,
                 start_indices=(
-                    0, PastureFunctional.r_obs - self.sgcnn_size // 2, PastureFunctional.r_obs - self.sgcnn_size // 2),
-                slice_sizes=(4, self.sgcnn_size, self.sgcnn_size)
+                    0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
+                slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
             )
-            obs_5 = jax.image.resize(obs_aug, (4, 16, 16), method='bilinear')
-            obs = lax.concatenate([obs_1, obs_2, obs_3, obs_4, obs_5], dimension=0)
+            # reduce_size = obs_aug_size // 16
+            # obs_ = lax.reduce_window(
+            #     obs_aug,
+            #     -jnp.inf,
+            #     lax.max,
+            #     (1, reduce_size, reduce_size),
+            #     (1, reduce_size, reduce_size),
+            #     padding='VALID')
+            # obs_5 = jax.image.resize(obs_, (num_channels, 16, 16), method='bilinear')
+            obs = lax.concatenate([
+                obs_1,
+                obs_2,
+                obs_3,
+                obs_4,
+                # obs_5
+            ],
+                dimension=0)
         obs_dict = {'observation': obs}
         if self.save_pixels:
             obs_dict['pixels'] = self.get_render(state)
@@ -559,7 +624,10 @@ class PastureFunctional(
         pasture_covered_enough = state.map_weed.sum() == 0
         judge_covered_enough = jnp.logical_and(judge_covered_enough, pasture_covered_enough)
 
+        crash_too_much = state.crash_count > 5
+
         terminated = jnp.logical_or(judge_covered_enough, judge_out_of_time)
+        terminated = jnp.logical_or(terminated, crash_too_much)
         return terminated  # noqa: Jax traced type can be handled correctly
 
     def reward(
@@ -575,28 +643,28 @@ class PastureFunctional(
         #                 + lax.select(v_linear == 0, -0.4, 0.))
         # reward_dynamic = -((jnp.abs(v_angular) / self.w_max) ** 2) / 2
 
-        map_area = self.map_width * self.map_height
-        coverage_t = map_area - state.map_frontier.sum()
-        coverage_tp1 = map_area - next_state.map_frontier.sum()
-        reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_vision * self.v_max * self.tau) * 0.125
-
-        tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
-        tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
-        # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
-        reward_tv_incremental = -(tv_tp1 - tv_t) / (self.v_max * self.tau) * 0.125
+        # map_area = self.map_width * self.map_height
+        # coverage_t = map_area - state.map_frontier.sum()
+        # coverage_tp1 = map_area - next_state.map_frontier.sum()
+        # reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_vision * self.v_max * self.tau) * 0.125
+        #
+        # tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
+        # tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
+        # # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
+        # reward_tv_incremental = -(tv_tp1 - tv_t) / (self.v_max * self.tau) * 0.125
 
         num_weed = state.map_weed.sum() - next_state.map_weed.sum()
         reward_weed_cut = num_weed * 5.0
         x_t, y_t = state.position.round().astype(jnp.int32)
         x_tp1, y_tp1 = next_state.position.round().astype(jnp.int32)
         delta_apf = state.observed_weed[y_tp1, x_tp1] - state.observed_weed[y_t, x_t]
-        reward_weed_approach = lax.select(delta_apf > 0, delta_apf, 0.) * 5.0
+        reward_weed_approach = delta_apf * 5.0
 
         reward = (
                 reward_const
                 + reward_collision
-                + reward_coverage
-                + reward_tv_incremental
+                # + reward_coverage
+                # + reward_tv_incremental
                 + reward_weed_cut
                 + reward_weed_approach
             # + reward_stiff
@@ -623,7 +691,7 @@ class PastureFunctional(
         screen, clock = render_state
 
         img = self.get_render(state)
-        # img = img.repeat(5, axis=0).repeat(5, axis=1)
+        img = img.repeat(2, axis=0).repeat(2, axis=1)
         img = jax_to_numpy(img)
 
         surf = pygame.surfarray.make_surface(img)
