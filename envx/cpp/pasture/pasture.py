@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Tuple, NamedTuple, Dict
+from typing import Any, Tuple, NamedTuple, Dict, Sequence
 
 import jax
 from jax import lax
@@ -43,6 +43,23 @@ class EnvState(NamedTuple):
 RenderStateType = Tuple["pygame.Surface", "pygame.time.Clock"]
 
 
+def to_left(p: tuple[int, int], q: tuple[int, int], s_x: jax.Array, s_y: jax.Array) -> jax.Array:
+    p_x, p_y = p
+    q_x, q_y = q
+    return (0 < p_x * q_y - p_y * q_x
+            + q_x * s_y - q_y * s_x
+            + s_x * p_y - s_y * p_x)
+
+
+def in_triangle(z_1: tuple[int, int], z_2: tuple[int, int], z_3: tuple[int, int], r: int) -> jax.Array:
+    s_x = lax.broadcast(jnp.arange(0, 2 * r + 1), sizes=[2 * r + 1])
+    s_y = lax.broadcast(jnp.arange(0, 2 * r + 1), sizes=[2 * r + 1]).swapaxes(0, 1)
+    return jnp.logical_and(
+        to_left(z_1, z_2, s_x, s_y) == to_left(z_2, z_3, s_x, s_y),
+        to_left(z_2, z_3, s_x, s_y) == to_left(z_3, z_1, s_x, s_y),
+    )
+
+
 class PastureFunctional(
     FuncEnv[EnvState, jax.Array, jax.Array, float, bool, RenderStateType]
 ):
@@ -66,16 +83,34 @@ class PastureFunctional(
     # nvec = [4, 9]
     nvec = [7, 21]
 
-    self_mask = (
-                        (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]) - r_obs) ** 2
-                        + (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]).swapaxes(0, 1)
-                           - r_obs) ** 2
-                ) <= r_self ** 2
+    # self_mask = (
+    #                     (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]) - r_obs) ** 2
+    #                     + (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]).swapaxes(0, 1)
+    #                        - r_obs) ** 2
+    #             ) <= r_self ** 2
+    # self_mask = (
+    #         (lax.broadcast(jnp.arange(0, 2 * r_self + 1), sizes=[2 * r_self + 1]) - r_self) ** 2
+    #         + (lax.broadcast(jnp.arange(0, 2 * r_self + 1), sizes=[2 * r_self + 1]).swapaxes(0, 1)
+    #            - r_self) ** 2
+    # )
+
     vision_mask = (
-                          (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]) - r_obs) ** 2
-                          + (lax.broadcast(jnp.arange(0, 2 * r_obs), sizes=[2 * r_obs]).swapaxes(0, 1)
-                             - r_obs) ** 2
+                          (lax.broadcast(jnp.arange(0, 2 * r_vision + 1), sizes=[2 * r_vision + 1]) - r_vision) ** 2
+                          + (lax.broadcast(jnp.arange(0, 2 * r_vision + 1), sizes=[2 * r_vision + 1]).swapaxes(0, 1)
+                             - r_vision) ** 2
                   ) <= r_vision ** 2
+    w_vision = 24
+    triangle_mask = in_triangle(
+        z_1=(r_vision, r_vision),
+        z_2=(r_vision - w_vision, 0),
+        z_3=(r_vision + w_vision, 0),
+        r=r_vision,
+    )
+    vision_mask = jnp.where(
+        triangle_mask,
+        vision_mask,
+        False
+    )
 
     num_obstacle_min = 3
     num_obstacle_max = 5
@@ -173,7 +208,7 @@ class PastureFunctional(
         position = jnp.stack([x, y])
         theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
 
-        x, y = position
+        x, y = position.round().astype(jnp.int32)
         # map_id = jax.random.randint(key=rng, shape=[1, ], minval=0, maxval=51)[0]
         # _, rng = jax.random.split(rng)
         map_id = np.random.randint(low=0, high=self.farmland_map_num)
@@ -181,13 +216,28 @@ class PastureFunctional(
             f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_v2/1/farmland_{map_id}.npy')
         # map_frontier = self.farmland_maps[map_id]
         # map_frontier = jnp.ones([self.map_height, self.map_width], dtype=jnp.bool_)
-        new_vision_mask = (
-                                  (lax.broadcast(jnp.arange(0, self.map_width),
-                                                 sizes=[self.map_height]) - x) ** 2
-                                  + (lax.broadcast(jnp.arange(0, self.map_height),
-                                                   sizes=[self.map_width]).swapaxes(0, 1)
-                                     - y) ** 2
-                          ) <= self.r_self ** 2
+        # new_vision_mask = (
+        #                           (lax.broadcast(jnp.arange(0, self.map_width),
+        #                                          sizes=[self.map_height]) - x) ** 2
+        #                           + (lax.broadcast(jnp.arange(0, self.map_height),
+        #                                            sizes=[self.map_width]).swapaxes(0, 1)
+        #                              - y) ** 2
+        #                   ) <= self.r_self ** 2
+        new_vision_mask = jnp.zeros([
+            self.map_height + 2 * self.r_vision,
+            self.map_width + 2 * self.r_vision],
+            dtype=jnp.bool_)
+        rotated_vision_mask = rotate_nearest(
+            image=lax.broadcast(self.vision_mask, sizes=[1, ]).transpose(1, 2, 0),
+            angle=-(jnp.pi / 2 + theta[0]),
+            # mode='constant',
+        ).transpose(2, 0, 1)[0]
+        new_vision_mask = lax.dynamic_update_slice(new_vision_mask,
+                                                   rotated_vision_mask,
+                                                   start_indices=(y, x))
+        new_vision_mask = lax.dynamic_slice(new_vision_mask,
+                                            start_indices=(self.r_vision, self.r_vision),
+                                            slice_sizes=(self.map_height, self.map_width))
         map_frontier = jnp.where(
             new_vision_mask,
             False,
@@ -378,10 +428,17 @@ class PastureFunctional(
         error = dx // 2
         ystep = lax.select(y1 < y2, 1, -1)
 
+        rotated_vision_mask = rotate_nearest(
+            image=lax.broadcast(self.vision_mask, sizes=[1, ]).transpose(1, 2, 0),
+            angle=-(jnp.pi / 2 + state.theta[0]),
+            # mode='constant',
+        ).transpose(2, 0, 1)[0]
+
         def bresenham_body(x, val: Tuple[int, float, jax.Array, jax.Array, jax.Array, jax.Array, bool]):
             y, error, map_frontier, map_pasture, map_trajectory, last_position, last_crashed = val
             next_position = lax.select(slope, jnp.array([y, x]), jnp.array([x, y]))
             x_aim, y_aim = next_position
+            # Agent's coverage mask in next step
             next_agent_mask = (
                                       (lax.broadcast(jnp.arange(0, self.map_width),
                                                      sizes=[self.map_height]) - x_aim) ** 2
@@ -389,6 +446,16 @@ class PastureFunctional(
                                                        sizes=[self.map_width]).swapaxes(0, 1)
                                          - y_aim) ** 2
                               ) <= self.r_self ** 2
+            # next_agent_mask = jnp.zeros([
+            #     self.map_height + 2 * self.r_self,
+            #     self.map_width + 2 * self.r_self],
+            #     dtype=jnp.bool_)
+            # next_agent_mask = lax.dynamic_update_slice(next_agent_mask,
+            #                                            self.self_mask,
+            #                                            start_indices=(y_aim, x_aim))
+            # next_agent_mask = lax.dynamic_slice(next_agent_mask,
+            #                                     start_indices=(self.r_self, self.r_self),
+            #                                     slice_sizes=(self.map_height, self.map_width))
             next_crashed = jnp.logical_and(next_agent_mask, state.map_obstacle).any()
             next_crashed = jnp.logical_or(last_crashed, next_crashed)
             next_position = lax.select(next_crashed, last_position, next_position)
@@ -397,13 +464,23 @@ class PastureFunctional(
                 False,
                 map_pasture,
             )
-            next_vision_mask = (
-                                       (lax.broadcast(jnp.arange(0, self.map_width),
-                                                      sizes=[self.map_height]) - x_aim) ** 2
-                                       + (lax.broadcast(jnp.arange(0, self.map_height),
-                                                        sizes=[self.map_width]).swapaxes(0, 1)
-                                          - y_aim) ** 2
-                               ) <= self.r_vision ** 2
+            # next_vision_mask = (
+            #                            (lax.broadcast(jnp.arange(0, self.map_width),
+            #                                           sizes=[self.map_height]) - x_aim) ** 2
+            #                            + (lax.broadcast(jnp.arange(0, self.map_height),
+            #                                             sizes=[self.map_width]).swapaxes(0, 1)
+            #                               - y_aim) ** 2
+            #                    ) <= self.r_vision ** 2
+            next_vision_mask = jnp.zeros([
+                self.map_height + 2 * self.r_vision,
+                self.map_width + 2 * self.r_vision],
+                dtype=jnp.bool_)
+            next_vision_mask = lax.dynamic_update_slice(next_vision_mask,
+                                                        rotated_vision_mask,
+                                                        start_indices=(y_aim, x_aim))
+            next_vision_mask = lax.dynamic_slice(next_vision_mask,
+                                                 start_indices=(self.r_vision, self.r_vision),
+                                                 slice_sizes=(self.map_height, self.map_width))
             map_frontier = jnp.where(
                 next_vision_mask,
                 False,
@@ -588,6 +665,13 @@ class PastureFunctional(
                     0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
                 slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
             )
+            # obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
+            # obs_5 = lax.dynamic_slice(
+            #     obs_,
+            #     start_indices=(
+            #         0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
+            #     slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
+            # )
             # reduce_size = obs_aug_size // 16
             # obs_ = lax.reduce_window(
             #     obs_aug,
@@ -793,13 +877,28 @@ class PastureFunctional(
         #     jnp.array([65, 227, 72], dtype=jnp.uint8),
         #     img
         # )
-        new_vision_mask = (
-                                  (lax.broadcast(jnp.arange(0, PastureFunctional.map_width),
-                                                 sizes=[PastureFunctional.map_height]) - x) ** 2
-                                  + (lax.broadcast(jnp.arange(0, PastureFunctional.map_height),
-                                                   sizes=[PastureFunctional.map_width]).swapaxes(0, 1)
-                                     - y) ** 2
-                          ) <= PastureFunctional.r_vision ** 2
+        # new_vision_mask = (
+        #                           (lax.broadcast(jnp.arange(0, PastureFunctional.map_width),
+        #                                          sizes=[PastureFunctional.map_height]) - x) ** 2
+        #                           + (lax.broadcast(jnp.arange(0, PastureFunctional.map_height),
+        #                                            sizes=[PastureFunctional.map_width]).swapaxes(0, 1)
+        #                              - y) ** 2
+        #                   ) <= PastureFunctional.r_vision ** 2
+        new_vision_mask = jnp.zeros([
+            PastureFunctional.map_height + 2 * PastureFunctional.r_vision,
+            PastureFunctional.map_width + 2 * PastureFunctional.r_vision],
+            dtype=jnp.bool_)
+        rotated_vision_mask = rotate_nearest(
+            image=lax.broadcast(PastureFunctional.vision_mask, sizes=[1, ]).transpose(1, 2, 0),
+            angle=-(jnp.pi / 2 + state.theta[0]),
+            # mode='constant',
+        ).transpose(2, 0, 1)[0]
+        new_vision_mask = lax.dynamic_update_slice(new_vision_mask,
+                                                   rotated_vision_mask,
+                                                   start_indices=(y, x))
+        new_vision_mask = lax.dynamic_slice(new_vision_mask,
+                                            start_indices=(PastureFunctional.r_vision, PastureFunctional.r_vision),
+                                            slice_sizes=(PastureFunctional.map_height, PastureFunctional.map_width))
         img = jnp.where(
             lax.broadcast(new_vision_mask, sizes=[3]).transpose(1, 2, 0),
             jnp.array([192, 192, 192], dtype=jnp.uint8),
@@ -855,6 +954,16 @@ class PastureFunctional(
                                                  sizes=[PastureFunctional.map_width]).swapaxes(0, 1)
                                    - y) ** 2
                         ) <= PastureFunctional.r_self ** 2
+        # new_self_mask = jnp.zeros([
+        #     PastureFunctional.map_height + 2 * PastureFunctional.r_self,
+        #     PastureFunctional.map_width + 2 * PastureFunctional.r_self],
+        #     dtype=jnp.bool_)
+        # new_self_mask = lax.dynamic_update_slice(new_self_mask,
+        #                                          PastureFunctional.self_mask,
+        #                                          start_indices=(y, x))
+        # new_self_mask = lax.dynamic_slice(new_self_mask,
+        #                                   start_indices=(PastureFunctional.r_self, PastureFunctional.r_self),
+        #                                   slice_sizes=(PastureFunctional.map_height, PastureFunctional.map_width))
         # Agent head
         img = jnp.where(
             lax.broadcast(

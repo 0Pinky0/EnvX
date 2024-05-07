@@ -7,7 +7,7 @@ env = gym.make(
     'Pasture',
     render_mode='rgb_array' if render else None,
     save_pixels=True,
-    action_type="discrete",
+    action_type="continuous",
     prevent_stiff=False,
     rotate_obs=True,
     round_vision=True,
@@ -21,7 +21,7 @@ if render:
 
 while True:
     action = env.action_space.sample()
-    # action = [2, 0.1]
+    # action = [2, 0.]
     # action = 0
     # nvec = [4, 19]
     # v_linear = 1
