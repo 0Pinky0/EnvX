@@ -13,6 +13,8 @@ env = gym.make(
     prevent_stiff=True,
     rotate_obs=True,
     sgcnn=True,
+    use_apf=False,
+    weed_count=600,
 )
 if render:
     env = HumanRendering(env)
@@ -30,9 +32,10 @@ while True:
     # action = (v_angular * 1) + (v_linear * nvec[1])
     action = env.action_space.sample()
     # action = [5, 0]
-    obs, reward, done, truncated, _ = env.step(action)
+    obs, reward, done, truncated, info = env.step(action)
     # print(reward)
     print(f'step {step} / 2000: {reward}')
+    print(info)
     step += 1
     if render:
         env.render()

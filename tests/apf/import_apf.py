@@ -13,7 +13,8 @@ rng = jrng.PRNGKey(0)
 a = jax.random.uniform(shape=(6, 6), key=rng) <= 0.1
 ori_mask = np.broadcast_to(jax_to_numpy(a), shape=(3, 6, 6)).transpose(1, 2, 0)
 ori = np.where(ori_mask, np.array([0., 0., 1.]), np.array([1., 1., 1.]))
-cv2.imshow('ori', ori)
+# cv2.imshow('ori', ori)
+cv2.imwrite('ori_mask.png', (ori * 255).repeat(50, axis=0).repeat(50, axis=1))
 
 # a = jnp.zeros([6, 6], dtype=jnp.bool_)
 # print(a)
@@ -27,6 +28,7 @@ dst = np.broadcast_to((1 - dst_mask), shape=(3, 6, 6)).transpose(1, 2, 0) * np.a
     ) + np.array(
         [0., 0., 1.], dtype=np.float32
     )
-cv2.imshow('dst', dst)
+# cv2.imshow('dst', dst)
+cv2.imwrite('dst_mask.png', (dst * 255).repeat(50, axis=0).repeat(50, axis=1))
 cv2.waitKey(0)
 

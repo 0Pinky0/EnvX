@@ -38,6 +38,7 @@ class EnvState(NamedTuple):
     crash_count: int
     timestep: int
     init_map: jax.Array
+    weed_count: int
 
 
 RenderStateType = Tuple["pygame.Surface", "pygame.time.Clock"]
@@ -118,7 +119,6 @@ class PastureFunctional(
     obstacle_circle_radius_min = 8
     obstacle_circle_radius_max = 15
 
-    pasture_ratio = 0.002
     decay_factor = 0.9
     decay_lowerbound = 1e-2
 
@@ -140,6 +140,10 @@ class PastureFunctional(
             sgcnn: bool = False,
             use_traj: bool = False,
             triangle_obs: bool = False,
+            use_apf: bool = False,
+            gaussian_weed: bool = False,
+            weed_count: int = None,
+            weed_ratio: float = 0.002,
             **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -151,6 +155,12 @@ class PastureFunctional(
         self.use_traj = use_traj
         self.sgcnn = sgcnn
         self.triangle_obs = triangle_obs
+        self.use_apf = use_apf
+        self.gaussian_weed = gaussian_weed
+        if weed_count is not None:
+            self.weed_ratio = weed_count / (self.map_height * self.map_width)
+        else:
+            self.weed_ratio = weed_ratio
         # Channels: [Frontier(unseen), Obstacles]
         # Future: [Farmland, Trajectory]
         # Define obs space
@@ -327,7 +337,11 @@ class PastureFunctional(
             (map_frontier, map_obstacle, position, rng)
         )
 
-        map_weed = jax.random.uniform(shape=(self.map_height, self.map_width), key=rng) <= self.pasture_ratio
+        adjusted_ratio = self.weed_ratio / map_frontier.sum() * (self.map_height * self.map_width)
+        if self.gaussian_weed:
+            map_weed = jax.random.normal(shape=(self.map_height, self.map_width), key=rng) <= adjusted_ratio
+        else:
+            map_weed = jax.random.uniform(shape=(self.map_height, self.map_width), key=rng) <= adjusted_ratio
         map_weed = jnp.where(map_frontier, map_weed, False)
         _, rng = jax.random.split(rng)
 
@@ -336,9 +350,10 @@ class PastureFunctional(
             map_weed,
             False,
         )
-        observed_weed = apf(observed_weed)
-        observed_weed = lax.select(observed_weed.sum() == 0., observed_weed, self.decay_factor ** observed_weed)
-        observed_weed = jnp.where(observed_weed < self.decay_lowerbound, 0., observed_weed)
+        if self.use_apf:
+            observed_weed = apf(observed_weed)
+            observed_weed = lax.select(observed_weed.sum() == 0., observed_weed, self.decay_factor ** observed_weed)
+            observed_weed = jnp.where(observed_weed < self.decay_lowerbound, 0., observed_weed)
 
         state = EnvState(
             position=position,
@@ -352,6 +367,7 @@ class PastureFunctional(
             crash_count=0,
             timestep=0,
             init_map=map_frontier,
+            weed_count=map_weed.sum(),
         )
         return state
 
@@ -509,9 +525,10 @@ class PastureFunctional(
             map_weed,
             False,
         )
-        observed_weed = apf(observed_weed)
-        observed_weed = lax.select(observed_weed.sum() == 0., observed_weed, self.decay_factor ** observed_weed)
-        observed_weed = jnp.where(observed_weed < self.decay_lowerbound, 0., observed_weed)
+        if self.use_apf:
+            observed_weed = apf(observed_weed)
+            observed_weed = lax.select(observed_weed.sum() == 0., observed_weed, self.decay_factor ** observed_weed)
+            observed_weed = jnp.where(observed_weed < self.decay_lowerbound, 0., observed_weed)
 
         crash_count = lax.select(crashed, state.crash_count + 1, 0)
 
@@ -528,6 +545,7 @@ class PastureFunctional(
             crash_count=crash_count,
             timestep=state.timestep + 1,
             init_map=state.init_map,
+            weed_count=state.weed_count,
         )
 
         return state
@@ -741,7 +759,10 @@ class PastureFunctional(
         reward_weed_cut = num_weed * 5.0
         x_t, y_t = state.position.round().astype(jnp.int32)
         x_tp1, y_tp1 = next_state.position.round().astype(jnp.int32)
-        delta_apf = state.observed_weed[y_tp1, x_tp1] - state.observed_weed[y_t, x_t]
+        if self.use_apf:
+            delta_apf = state.observed_weed[y_tp1, x_tp1] - state.observed_weed[y_t, x_t]
+        else:
+            delta_apf = 0.
         reward_weed_approach = delta_apf * 5.0
 
         reward = (
@@ -758,6 +779,19 @@ class PastureFunctional(
         )
         # reward = reward / 10
         return reward
+
+    def step_info(
+            self, state: EnvState, action: jax.Array, next_state: EnvState
+    ) -> dict[str, Any]:
+        weed_rate = 1 - state.map_weed.sum() / state.weed_count
+        coverage_rate = 1 - state.map_frontier.sum() / state.init_map.sum()
+        path_length = state.map_trajectory.sum()
+        return {
+            'weed_rate': weed_rate,
+            'coverage_rate': coverage_rate,
+            'path_length': path_length,
+        }
+
 
     def render_image(
             self,
