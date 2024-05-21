@@ -144,6 +144,7 @@ class PastureFunctional(
             gaussian_weed: bool = False,
             weed_count: int = None,
             weed_ratio: float = 0.002,
+            map_id: int = None,
             **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -157,6 +158,7 @@ class PastureFunctional(
         self.triangle_obs = triangle_obs
         self.use_apf = use_apf
         self.gaussian_weed = gaussian_weed
+        self.map_id = map_id
         if weed_count is not None:
             self.weed_ratio = weed_count / (self.map_height * self.map_width)
         else:
@@ -221,7 +223,10 @@ class PastureFunctional(
         x, y = position.round().astype(jnp.int32)
         # map_id = jax.random.randint(key=rng, shape=[1, ], minval=0, maxval=51)[0]
         # _, rng = jax.random.split(rng)
-        map_id = np.random.randint(low=0, high=self.farmland_map_num)
+        if self.map_id is not None:
+            map_id = self.map_id
+        else:
+            map_id = np.random.randint(low=0, high=self.farmland_map_num)
         map_frontier = jnp.load(
             f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_v2/1/farmland_{map_id}.npy')
         # map_frontier = self.farmland_maps[map_id]
