@@ -204,16 +204,18 @@ class PastureFunctional(
 
     def initial(self, rng: PRNGKey):
         """Initial state generation."""
-        x = jax.random.uniform(
-            key=rng, minval=5 * self.r_self, maxval=self.map_height - 5 * self.r_self
-        )
-        _, rng = jax.random.split(rng)
-        y = jax.random.uniform(
-            key=rng, minval=5 * self.r_self, maxval=self.map_width - 5 * self.r_self
-        )
-        _, rng = jax.random.split(rng)
-        position = jnp.stack([x, y])
-        theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
+        # x = jax.random.uniform(
+        #     key=rng, minval=5 * self.r_self, maxval=self.map_height - 5 * self.r_self
+        # )
+        # _, rng = jax.random.split(rng)
+        # y = jax.random.uniform(
+        #     key=rng, minval=5 * self.r_self, maxval=self.map_width - 5 * self.r_self
+        # )
+        # _, rng = jax.random.split(rng)
+        # position = jnp.stack([x, y])
+        # theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
+        position = jnp.stack([4, 4])
+        theta = jnp.array([jnp.pi / 2])
 
         x, y = position.round().astype(jnp.int32)
         # map_id = jax.random.randint(key=rng, shape=[1, ], minval=0, maxval=51)[0]
@@ -348,8 +350,8 @@ class PastureFunctional(
                 map_weed,
                 100.0,
             )
-            discrete_num = int(self.map_height * self.map_width * self.weed_ratio)
-            desired_ratio = jnp.sort(map_weed.flatten(), descending=False)[discrete_num]
+            discrete_num = int(self.map_height * self.map_width * self.weed_ratio) - 1
+            desired_ratio = map_weed.flatten().sort()[discrete_num]
             map_weed = map_weed <= desired_ratio
         else:
             map_weed = jax.random.uniform(shape=(self.map_height, self.map_width), key=rng)
@@ -358,8 +360,8 @@ class PastureFunctional(
                 map_weed,
                 100.0,
             )
-            discrete_num = int(self.map_height * self.map_width * self.weed_ratio)
-            desired_ratio = jnp.sort(map_weed.flatten(), descending=False)[discrete_num]
+            discrete_num = int(self.map_height * self.map_width * self.weed_ratio) - 1
+            desired_ratio = map_weed.flatten().sort()[discrete_num]
             map_weed = map_weed <= desired_ratio
         _, rng = jax.random.split(rng)
 
@@ -380,7 +382,7 @@ class PastureFunctional(
             map_obstacle=map_obstacle,
             map_weed=map_weed,
             observed_weed=observed_weed,
-            map_trajectory=jnp.zeros([self.map_height, self.map_width], dtype=jnp.bool_),
+            map_trajectory=jnp.zeros([self.map_height, self.map_width], dtype=jnp.uint8),
             crashed=False,
             crash_count=0,
             timestep=0,
@@ -523,7 +525,7 @@ class PastureFunctional(
                 False,
                 map_frontier,
             )
-            map_trajectory = map_trajectory.at[y_aim, x_aim].set(True)
+            map_trajectory = map_trajectory.at[y_aim, x_aim].set(map_trajectory[y_aim, x_aim] + 1)
             error -= dy
             y += lax.select(error < 0, ystep, 0)
             error += lax.select(error < 0, dx, 0)
@@ -747,7 +749,7 @@ class PastureFunctional(
         judge_covered_enough = coverage_ratio >= 0.99
 
         pasture_covered_enough = state.map_weed.sum() == 0
-        judge_covered_enough = jnp.logical_and(judge_covered_enough, pasture_covered_enough)
+        judge_covered_enough = jnp.logical_or(judge_covered_enough, pasture_covered_enough)
 
         crash_too_much = state.crash_count > 5
 
@@ -995,7 +997,7 @@ class PastureFunctional(
         )
         # Trajectory
         img = jnp.where(
-            lax.broadcast(state.map_trajectory, sizes=[3]).transpose(1, 2, 0),
+            lax.broadcast(state.map_trajectory != 0, sizes=[3]).transpose(1, 2, 0),
             jnp.array([0, 128, 255], dtype=jnp.uint8),
             img
         )
