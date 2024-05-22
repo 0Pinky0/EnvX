@@ -10,8 +10,9 @@ env = gym.make(
     action_type="continuous",
     prevent_stiff=False,
     rotate_obs=True,
-    round_vision=True,
-    sgcnn=True,
+    sgcnn=False,
+    weed_count=600,
+    gaussian_weed=True,
 )
 if render:
     env = HumanRendering(env)

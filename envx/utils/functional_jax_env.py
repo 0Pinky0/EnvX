@@ -65,6 +65,7 @@ class FunctionalJaxEnv(gym.Env):
         super().reset(seed=seed)
         if seed is not None:
             self.rng = jrng.PRNGKey(seed)
+            np.random.seed(seed)
 
         rng, self.rng = jrng.split(self.rng)
 

@@ -70,7 +70,7 @@ class PastureFunctional(
     r_obs: int = 64
     r_vision: int = 24
 
-    max_timestep: int = 4_000
+    max_timestep: int = 8_000
 
     map_width = 400
     map_height = map_width
@@ -120,6 +120,7 @@ class PastureFunctional(
     def __init__(
             self,
             save_pixels: bool = False,
+            return_map: bool = False,
             action_type: str = "continuous",
             rotate_obs: bool = False,
             prevent_stiff: bool = False,
@@ -140,6 +141,7 @@ class PastureFunctional(
         self.use_traj = use_traj
         self.sgcnn = sgcnn
         self.use_apf = use_apf
+        self.return_map = return_map
         self.gaussian_weed = gaussian_weed
         self.map_id = map_id
         if weed_count is not None:
@@ -150,8 +152,16 @@ class PastureFunctional(
         # Future: [Farmland, Trajectory]
         # Define obs space
         num_channels = 4 if self.use_traj else 3
-        obs_dict = {
-            "observation": gym.spaces.Box(
+        obs_dict = {}
+        if return_map:
+            obs_dict["map"] = gym.spaces.Box(
+                low=0.,
+                high=1.,
+                shape=(num_channels, self.map_height, self.map_width),
+                dtype=np.float32
+            )
+        else:
+            obs_dict["observation"] = gym.spaces.Box(
                 low=0.,
                 high=1.,
                 shape=(4 * num_channels if self.sgcnn else num_channels,
@@ -159,7 +169,6 @@ class PastureFunctional(
                        self.sgcnn_size if self.sgcnn else 2 * self.r_obs),
                 dtype=np.float32
             )
-        }
         if save_pixels:
             obs_dict["pixels"] = gym.spaces.Box(
                 low=0,
@@ -169,6 +178,9 @@ class PastureFunctional(
             )
         if not rotate_obs:
             obs_dict["pose"] = gym.spaces.Box(low=-1., high=1., shape=(2,), dtype=np.float32)
+        if return_map:
+            obs_dict["position"] = gym.spaces.Box(low=0., high=self.map_width, shape=(2,), dtype=np.float32)
+            obs_dict["theta"] = gym.spaces.Box(low=-np.pi, high=np.pi, shape=(1,), dtype=np.float32)
         self.observation_space = gym.spaces.dict.Dict(obs_dict)
         # Define action space
         match action_type:
@@ -329,17 +341,26 @@ class PastureFunctional(
             (map_frontier, map_obstacle, position, rng)
         )
 
-        map_area = np.load(
-            f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_v2/1/farmland_{map_id}.npy').sum()
-        adjusted_ratio = self.weed_ratio / map_area * (self.map_height * self.map_width)
         if self.gaussian_weed:
-            map_weed = jax.random.normal(shape=(self.map_height, self.map_width), key=rng) # <= -1
-            discrete_num = int(self.map_height * self.map_width * adjusted_ratio)
-            desired_ratio = map_weed.flatten().sort()[discrete_num]
+            map_weed = jax.random.normal(shape=(self.map_height, self.map_width), key=rng)
+            map_weed = jnp.where(
+                map_frontier,
+                map_weed,
+                100.0,
+            )
+            discrete_num = int(self.map_height * self.map_width * self.weed_ratio)
+            desired_ratio = jnp.sort(map_weed.flatten(), descending=False)[discrete_num]
             map_weed = map_weed <= desired_ratio
         else:
-            map_weed = jax.random.uniform(shape=(self.map_height, self.map_width), key=rng) <= adjusted_ratio
-        map_weed = jnp.where(map_frontier, map_weed, False)
+            map_weed = jax.random.uniform(shape=(self.map_height, self.map_width), key=rng)
+            map_weed = jnp.where(
+                map_frontier,
+                map_weed,
+                100.0,
+            )
+            discrete_num = int(self.map_height * self.map_width * self.weed_ratio)
+            desired_ratio = jnp.sort(map_weed.flatten(), descending=False)[discrete_num]
+            map_weed = map_weed <= desired_ratio
         _, rng = jax.random.split(rng)
 
         observed_weed = jnp.where(
@@ -553,23 +574,18 @@ class PastureFunctional(
     def observation(self, state: EnvState) -> Dict[str, jax.Array]:
         """Cartpole observation."""
         x, y = state.position.round().astype(jnp.int32)
-        cos_theta = jnp.cos(state.theta)
-        sin_theta = jnp.sin(state.theta)
-        pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
-
-        obs = jnp.stack(
-            [
-                state.map_frontier,
-                state.map_obstacle,
-                state.map_weed,
-                # state.map_trajectory,
-            ],
-            dtype=jnp.float32
-        )
-        num_channels = 4 if self.use_traj else 3
+        obs_list = [state.map_frontier,
+                    state.map_obstacle,
+                    state.map_weed]
         init_val = [0., 1., 0.]
         if self.use_traj:
             init_val.append(0.)
+            # obs_list.append(state.map_trajectory)
+        obs = jnp.stack(
+            obs_list,
+            dtype=jnp.float32
+        )
+        num_channels = 4 if self.use_traj else 3
         if self.rotate_obs:
             # if self.sgcnn:
             #     map_diag = np.ceil(
@@ -711,7 +727,14 @@ class PastureFunctional(
         if self.save_pixels:
             obs_dict['pixels'] = self.get_render(state)
         if not self.rotate_obs:
+            cos_theta = jnp.cos(state.theta)
+            sin_theta = jnp.sin(state.theta)
+            pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
             obs_dict['pose'] = pose
+        if self.return_map:
+            obs_dict['map'] = state.position
+            obs_dict['position'] = state.position
+            obs_dict['theta'] = state.theta
         return obs_dict
 
     def terminal(self, state: EnvState) -> bool:
@@ -791,7 +814,6 @@ class PastureFunctional(
             'coverage_rate': coverage_rate,
             'path_length': path_length,
         }
-
 
     def render_image(
             self,

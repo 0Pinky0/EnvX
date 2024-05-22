@@ -48,7 +48,7 @@ class FarmlandFunctional(
     r_self: int = 4
     r_obs: int = 64
 
-    max_timestep: int = 4000
+    max_timestep: int = 8000
 
     map_width = 400
     map_height = map_width
@@ -565,7 +565,7 @@ class FarmlandFunctional(
         screen, clock = render_state
 
         img = self.get_render(state)
-        # img = img.repeat(5, axis=0).repeat(5, axis=1)
+        img = img.repeat(2, axis=0).repeat(2, axis=1)
         img = jax_to_numpy(img)
 
         surf = pygame.surfarray.make_surface(img)
