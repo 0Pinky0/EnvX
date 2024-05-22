@@ -47,7 +47,6 @@ class FarmlandFunctional(
 
     r_self: int = 4
     r_obs: int = 64
-    diag_obs: int = np.ceil(np.sqrt(2) * r_obs).astype(np.int32)
 
     max_timestep: int = 4000
 
@@ -57,16 +56,9 @@ class FarmlandFunctional(
     screen_width = 600
     screen_height = 600
 
-    v_max = 7
+    v_max = 7.0
     w_max = 1.0
-    # nvec = [4, 9]
     nvec = [7, 21]
-
-    vision_mask = (
-                          (lax.broadcast(jnp.arange(0, map_width), sizes=[map_height]) - map_width // 2) ** 2
-                          + (lax.broadcast(jnp.arange(0, map_height), sizes=[map_width]).swapaxes(0, 1)
-                             - map_height // 2) ** 2
-                  ) <= r_self ** 2
 
     num_obstacle_min = 3
     num_obstacle_max = 5
@@ -74,16 +66,21 @@ class FarmlandFunctional(
     obstacle_circle_radius_min = 8
     obstacle_circle_radius_max = 15
 
+    # Supporting variables, need not change
     farmland_map_num = 1650
-    # farmland_maps = jnp.load(
-    #     f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_shapes/farmland_{map_width}.npy')
+    diag_obs: int = np.ceil(np.sqrt(2) * r_obs).astype(np.int32)
+    vision_mask = (
+                          (lax.broadcast(jnp.arange(0, map_width), sizes=[map_height]) - map_width // 2) ** 2
+                          + (lax.broadcast(jnp.arange(0, map_height), sizes=[map_width]).swapaxes(0, 1)
+                             - map_height // 2) ** 2
+                  ) <= r_self ** 2
 
     def __init__(
             self,
             save_pixels: bool = False,
             action_type: str = "continuous",
-            rotate_obs: bool = False,
-            prevent_stiff: bool = False,
+            rotate_obs: bool = True,
+            prevent_stiff: bool = True,
             **kwargs: Any,
     ):
         super().__init__(**kwargs)
