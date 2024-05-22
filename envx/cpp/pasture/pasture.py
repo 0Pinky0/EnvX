@@ -83,12 +83,6 @@ class PastureFunctional(
     # nvec = [4, 9]
     nvec = [7, 21]
 
-    num_obstacle_min = 3
-    num_obstacle_max = 5
-
-    obstacle_circle_radius_min = 8
-    obstacle_circle_radius_max = 15
-
     decay_factor = 0.9
     decay_lowerbound = 1e-2
 
@@ -122,7 +116,7 @@ class PastureFunctional(
             save_pixels: bool = False,
             return_map: bool = False,
             action_type: str = "continuous",
-            rotate_obs: bool = False,
+            rotate_obs: bool = True,
             prevent_stiff: bool = False,
             sgcnn: bool = False,
             use_traj: bool = False,
@@ -131,6 +125,10 @@ class PastureFunctional(
             weed_count: int = None,
             weed_ratio: float = 0.002,
             map_id: int = None,
+            num_obstacle_min: int = 3,
+            num_obstacle_max: int = 5,
+            obstacle_circle_radius_min: int = 8,
+            obstacle_circle_radius_max: int = 15,
             **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -144,6 +142,10 @@ class PastureFunctional(
         self.return_map = return_map
         self.gaussian_weed = gaussian_weed
         self.map_id = map_id
+        self.num_obstacle_min = num_obstacle_min
+        self.num_obstacle_max = num_obstacle_max
+        self.obstacle_circle_radius_min = obstacle_circle_radius_min
+        self.obstacle_circle_radius_max = obstacle_circle_radius_max
         if weed_count is not None:
             self.weed_ratio = weed_count / (self.map_height * self.map_width)
         else:
@@ -587,145 +589,7 @@ class PastureFunctional(
             obs_list,
             dtype=jnp.float32
         )
-        num_channels = 4 if self.use_traj else 3
-        if self.rotate_obs:
-            # if self.sgcnn:
-            #     map_diag = np.ceil(
-            #         np.sqrt(self.map_height ** 2 + self.map_width ** 2)
-            #     ).astype(np.int32)
-            #     obs_aug_size = 2 * map_diag - 1
-            #     obs_aug = jnp.full(
-            #         [num_channels,
-            #          obs_aug_size,
-            #          obs_aug_size],
-            #         fill_value=jnp.broadcast_to(jnp.array(init_val), shape=(1, 1, num_channels)).transpose(2, 0, 1),
-            #         dtype=jnp.float32
-            #     )
-            #     obs_aug = lax.dynamic_update_slice(
-            #         obs_aug,
-            #         obs,
-            #         start_indices=(0, map_diag - y, map_diag - x)
-            #     )
-            #     # obs_aug = lax.dynamic_slice(
-            #     #     obs_aug,
-            #     #     start_indices=(0, y, x),
-            #     #     slice_sizes=(num_channels, 2 * self.diag_obs, 2 * self.diag_obs)
-            #     # )
-            #     # Transform 2d bool array into 3d float array, meeting pix demands
-            #     obs_aug = rotate_nearest(
-            #         image=obs_aug.transpose(1, 2, 0),
-            #         angle=state.theta[0] - jnp.pi,
-            #         # mode='constant',
-            #     ).transpose(2, 0, 1)
-            #     obs = lax.dynamic_slice(
-            #         obs_aug,
-            #         start_indices=(0,
-            #                        map_diag - self.r_obs,
-            #                        map_diag - self.r_obs),
-            #         slice_sizes=(num_channels, 2 * self.r_obs, 2 * self.r_obs)
-            #     )
-            # else:
-            obs_aug = jnp.full(
-                [num_channels,
-                 self.map_height + 2 * self.diag_obs,
-                 self.map_width + 2 * self.diag_obs],
-                fill_value=jnp.broadcast_to(jnp.array(init_val), shape=(1, 1, num_channels)).transpose(2, 0, 1),
-                dtype=jnp.float32
-            )
-            obs_aug = lax.dynamic_update_slice(
-                obs_aug,
-                obs,
-                start_indices=(0, self.diag_obs, self.diag_obs)
-            )
-            obs_aug = lax.dynamic_slice(
-                obs_aug,
-                start_indices=(0, y, x),
-                slice_sizes=(num_channels, 2 * self.diag_obs, 2 * self.diag_obs)
-            )
-            # Transform 2d bool array into 3d float array, meeting pix demands
-            obs_aug = rotate_nearest(
-                image=obs_aug.transpose(1, 2, 0),
-                angle=state.theta[0] - jnp.pi,
-                # mode='constant',
-            ).transpose(2, 0, 1)
-            obs = lax.dynamic_slice(
-                obs_aug,
-                start_indices=(0,
-                               self.diag_obs - self.r_obs,
-                               self.diag_obs - self.r_obs),
-                slice_sizes=(num_channels, 2 * self.r_obs, 2 * self.r_obs)
-            )
-        else:
-            obs_aug = jnp.full(
-                [num_channels,
-                 self.map_height + 2 * self.r_obs,
-                 self.map_width + 2 * self.r_obs],
-                fill_value=jnp.broadcast_to(jnp.array(init_val), shape=(1, 1, num_channels)).transpose(2, 0, 1),
-                dtype=jnp.float32
-            )
-            obs_aug = lax.dynamic_update_slice(
-                obs_aug,
-                obs,
-                start_indices=(0, self.r_obs, self.r_obs)
-            )
-            obs = lax.dynamic_slice(
-                obs_aug,
-                start_indices=(0, y, x),
-                slice_sizes=(num_channels, 2 * self.r_obs, 2 * self.r_obs)
-            )
-        if self.sgcnn:
-            obs_1 = lax.dynamic_slice(
-                obs,
-                start_indices=(
-                    0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
-                slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
-            )
-            obs_ = lax.reduce_window(obs, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
-            obs_2 = lax.dynamic_slice(
-                obs_,
-                start_indices=(
-                    0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
-                slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
-            )
-            obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
-            obs_3 = lax.dynamic_slice(
-                obs_,
-                start_indices=(
-                    0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
-                slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
-            )
-            obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
-            obs_4 = lax.dynamic_slice(
-                obs_,
-                start_indices=(
-                    0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
-                slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
-            )
-            # obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
-            # obs_5 = lax.dynamic_slice(
-            #     obs_,
-            #     start_indices=(
-            #         0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
-            #     slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
-            # )
-            # reduce_size = obs_aug_size // 16
-            # obs_ = lax.reduce_window(
-            #     obs_aug,
-            #     -jnp.inf,
-            #     lax.max,
-            #     (1, reduce_size, reduce_size),
-            #     (1, reduce_size, reduce_size),
-            #     padding='VALID')
-            # obs_5 = jax.image.resize(obs_, (num_channels, 16, 16), method='bilinear')
-            obs = lax.concatenate([
-                obs_1,
-                obs_2,
-                obs_3,
-                obs_4,
-                # obs_5
-            ],
-                dimension=0)
-        obs_dict = {'observation': obs}
+        obs_dict = {}
         if self.save_pixels:
             obs_dict['pixels'] = self.get_render(state)
         if not self.rotate_obs:
@@ -734,9 +598,101 @@ class PastureFunctional(
             pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
             obs_dict['pose'] = pose
         if self.return_map:
-            obs_dict['map'] = state.position
+            obs_list.append(state.map_trajectory)
+            obs = jnp.stack(
+                obs_list,
+                dtype=jnp.float32
+            )
+            obs_dict['map'] = obs
             obs_dict['position'] = state.position
             obs_dict['theta'] = state.theta
+        else:
+            num_channels = 4 if self.use_traj else 3
+            if self.rotate_obs:
+                obs_aug = jnp.full(
+                    [num_channels,
+                     self.map_height + 2 * self.diag_obs,
+                     self.map_width + 2 * self.diag_obs],
+                    fill_value=jnp.broadcast_to(jnp.array(init_val), shape=(1, 1, num_channels)).transpose(2, 0, 1),
+                    dtype=jnp.float32
+                )
+                obs_aug = lax.dynamic_update_slice(
+                    obs_aug,
+                    obs,
+                    start_indices=(0, self.diag_obs, self.diag_obs)
+                )
+                obs_aug = lax.dynamic_slice(
+                    obs_aug,
+                    start_indices=(0, y, x),
+                    slice_sizes=(num_channels, 2 * self.diag_obs, 2 * self.diag_obs)
+                )
+                # Transform 2d bool array into 3d float array, meeting pix demands
+                obs_aug = rotate_nearest(
+                    image=obs_aug.transpose(1, 2, 0),
+                    angle=state.theta[0] - jnp.pi,
+                    # mode='constant',
+                ).transpose(2, 0, 1)
+                obs = lax.dynamic_slice(
+                    obs_aug,
+                    start_indices=(0,
+                                   self.diag_obs - self.r_obs,
+                                   self.diag_obs - self.r_obs),
+                    slice_sizes=(num_channels, 2 * self.r_obs, 2 * self.r_obs)
+                )
+            else:
+                obs_aug = jnp.full(
+                    [num_channels,
+                     self.map_height + 2 * self.r_obs,
+                     self.map_width + 2 * self.r_obs],
+                    fill_value=jnp.broadcast_to(jnp.array(init_val), shape=(1, 1, num_channels)).transpose(2, 0, 1),
+                    dtype=jnp.float32
+                )
+                obs_aug = lax.dynamic_update_slice(
+                    obs_aug,
+                    obs,
+                    start_indices=(0, self.r_obs, self.r_obs)
+                )
+                obs = lax.dynamic_slice(
+                    obs_aug,
+                    start_indices=(0, y, x),
+                    slice_sizes=(num_channels, 2 * self.r_obs, 2 * self.r_obs)
+                )
+            if self.sgcnn:
+                obs_1 = lax.dynamic_slice(
+                    obs,
+                    start_indices=(
+                        0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
+                    slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
+                )
+                obs_ = lax.reduce_window(obs, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
+                obs_2 = lax.dynamic_slice(
+                    obs_,
+                    start_indices=(
+                        0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
+                    slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
+                )
+                obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
+                obs_3 = lax.dynamic_slice(
+                    obs_,
+                    start_indices=(
+                        0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
+                    slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
+                )
+                obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
+                obs_4 = lax.dynamic_slice(
+                    obs_,
+                    start_indices=(
+                        0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
+                    slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
+                )
+                obs = lax.concatenate([
+                    obs_1,
+                    obs_2,
+                    obs_3,
+                    obs_4,
+                ],
+                    dimension=0)
+            obs_dict['observation'] = obs
         return obs_dict
 
     def terminal(self, state: EnvState) -> bool:
