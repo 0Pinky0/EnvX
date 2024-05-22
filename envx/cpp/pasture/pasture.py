@@ -329,9 +329,14 @@ class PastureFunctional(
             (map_frontier, map_obstacle, position, rng)
         )
 
-        adjusted_ratio = self.weed_ratio / map_frontier.sum() * (self.map_height * self.map_width)
+        map_area = np.load(
+            f'{str(Path(__file__).parent.parent.parent.absolute())}/data/farmland_v2/1/farmland_{map_id}.npy').sum()
+        adjusted_ratio = self.weed_ratio / map_area * (self.map_height * self.map_width)
         if self.gaussian_weed:
-            map_weed = jax.random.normal(shape=(self.map_height, self.map_width), key=rng) <= adjusted_ratio
+            map_weed = jax.random.normal(shape=(self.map_height, self.map_width), key=rng) # <= -1
+            discrete_num = int(self.map_height * self.map_width * adjusted_ratio)
+            desired_ratio = map_weed.flatten().sort()[discrete_num]
+            map_weed = map_weed <= desired_ratio
         else:
             map_weed = jax.random.uniform(shape=(self.map_height, self.map_width), key=rng) <= adjusted_ratio
         map_weed = jnp.where(map_frontier, map_weed, False)

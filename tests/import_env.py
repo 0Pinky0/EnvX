@@ -15,6 +15,7 @@ env = gym.make(
     sgcnn=True,
     use_apf=False,
     weed_count=600,
+    gaussian_weed=True,
 )
 if render:
     env = HumanRendering(env)
