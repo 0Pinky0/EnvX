@@ -7,10 +7,12 @@ render = False
 env = gym.make(
     'Pasture',
     render_mode='rgb_array' if render else None,
-    save_pixels=True,
+    save_pixels=False,
     action_type="discrete",
     rotate_obs=True,
     sgcnn=True,
+    use_traj=True,
+    use_apf=True,
 )
 if render:
     env = HumanRendering(env)

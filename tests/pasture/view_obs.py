@@ -14,7 +14,7 @@ scale_up = 3
 window = pygame.display.set_mode((r_obs * scale_up, r_obs * scale_up))
 clock = pygame.time.Clock()
 
-env = gym.make('Pasture', rotate_obs=True)
+env = gym.make('Pasture', rotate_obs=True, use_traj=True)
 state, _ = env.reset()
 
 while True:

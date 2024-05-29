@@ -39,6 +39,7 @@ class EnvState(NamedTuple):
     timestep: int
     init_map: jax.Array
     weed_count: int
+    traj_crossed: bool
 
 
 RenderStateType = Tuple["pygame.Surface", "pygame.time.Clock"]
@@ -67,10 +68,10 @@ class PastureFunctional(
     tau: float = 0.5
 
     r_self: int = 4
-    r_obs: int = 64
+    r_obs: int = 128
     r_vision: int = 24
 
-    max_timestep: int = 8_000
+    max_timestep: int = 4_000
 
     map_width = 400
     map_height = map_width
@@ -90,7 +91,8 @@ class PastureFunctional(
     w_vision = 24
 
     # Supporting variables, need not change
-    sgcnn_size = 16
+    sgcnn_scale = 5
+    sgcnn_size = 2 * r_obs // (2 ** (sgcnn_scale - 1))
     farmland_map_num = 1650
     diag_obs: int = np.ceil(np.sqrt(2) * r_obs).astype(np.int32)
     vision_mask = (
@@ -110,19 +112,13 @@ class PastureFunctional(
             vision_mask,
             False
         )
-        # vision_mask = in_triangle(
-        #     z_1=(r_vision, r_vision),
-        #     z_2=(r_vision - w_vision, 0),
-        #     z_3=(r_vision + w_vision, 0),
-        #     r=r_vision,
-        # )
 
     def __init__(
             self,
             save_pixels: bool = False,
             return_map: bool = False,
             action_type: str = "continuous",
-            rotate_obs: bool = True,
+            rotate_obs: bool = False,
             prevent_stiff: bool = False,
             sgcnn: bool = False,
             use_traj: bool = False,
@@ -135,6 +131,7 @@ class PastureFunctional(
             num_obstacle_max: int = 5,
             obstacle_circle_radius_min: int = 8,
             obstacle_circle_radius_max: int = 15,
+            return_info: bool = False,
             **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -152,6 +149,7 @@ class PastureFunctional(
         self.num_obstacle_max = num_obstacle_max
         self.obstacle_circle_radius_min = obstacle_circle_radius_min
         self.obstacle_circle_radius_max = obstacle_circle_radius_max
+        self.return_info = return_info
         if weed_count is not None:
             self.weed_ratio = weed_count / (self.map_height * self.map_width)
         else:
@@ -172,7 +170,7 @@ class PastureFunctional(
             obs_dict["observation"] = gym.spaces.Box(
                 low=0.,
                 high=1.,
-                shape=(4 * num_channels if self.sgcnn else num_channels,
+                shape=(self.sgcnn_scale * num_channels if self.sgcnn else num_channels,
                        self.sgcnn_size if self.sgcnn else 2 * self.r_obs,
                        self.sgcnn_size if self.sgcnn else 2 * self.r_obs),
                 dtype=np.float32
@@ -396,6 +394,7 @@ class PastureFunctional(
             timestep=0,
             init_map=map_frontier,
             weed_count=map_weed.sum(),
+            traj_crossed=False,
         )
         return state
 
@@ -481,8 +480,8 @@ class PastureFunctional(
         else:
             rotated_vision_mask = self.vision_mask
 
-        def bresenham_body(x, val: Tuple[int, float, jax.Array, jax.Array, jax.Array, jax.Array, bool]):
-            y, error, map_frontier, map_pasture, map_trajectory, last_position, last_crashed = val
+        def bresenham_body(x, val: Tuple[int, float, jax.Array, jax.Array, jax.Array, jax.Array, bool, bool, bool]):
+            y, error, map_frontier, map_pasture, map_trajectory, last_position, last_crashed, traj_crossed, is_first = val
             next_position = lax.select(slope, jnp.array([y, x]), jnp.array([x, y]))
             x_aim, y_aim = next_position
             # Agent's coverage mask in next step
@@ -534,19 +533,22 @@ class PastureFunctional(
                 map_frontier,
             )
             map_trajectory = map_trajectory.at[y_aim, x_aim].set(map_trajectory[y_aim, x_aim] + 1)
+            has_cross = lax.select(state.map_trajectory[y_aim, x_aim] > 0, True, False)
+            is_first = jnp.logical_and(is_first, has_cross)
+            traj_crossed = jnp.logical_and(has_cross, jnp.logical_not(is_first))
             error -= dy
             y += lax.select(error < 0, ystep, 0)
             error += lax.select(error < 0, dx, 0)
-            return y, error, map_frontier, map_pasture, map_trajectory, next_position, next_crashed
+            return y, error, map_frontier, map_pasture, map_trajectory, next_position, next_crashed, traj_crossed, is_first
 
         map_frontier = state.map_frontier
         map_weed = state.map_weed
         map_trajectory = state.map_trajectory
-        _, _, map_frontier, map_weed, map_trajectory, crashed_position, crashed_when_running = lax.fori_loop(
+        _, _, map_frontier, map_weed, map_trajectory, crashed_position, crashed_when_running, traj_crossed, _ = lax.fori_loop(
             x1,
             x2 + 1,
             bresenham_body,
-            (y1, error, map_frontier, map_weed, map_trajectory, state.position.round().astype(jnp.int32), False)
+            (y1, error, map_frontier, map_weed, map_trajectory, state.position.round().astype(jnp.int32), False, False, True)
         )
         crashed = jnp.logical_or(crashed, crashed_when_running)
         new_position = lax.select(crashed_when_running, crashed_position.astype(jnp.float32), new_position)
@@ -577,6 +579,7 @@ class PastureFunctional(
             timestep=state.timestep + 1,
             init_map=state.init_map,
             weed_count=state.weed_count,
+            traj_crossed=traj_crossed,
         )
 
         return state
@@ -586,7 +589,7 @@ class PastureFunctional(
         x, y = state.position.round().astype(jnp.int32)
         obs_list = [state.map_frontier,
                     state.map_obstacle,
-                    state.map_weed]
+                    state.observed_weed]
         init_val = [0., 1., 0.]
         if self.use_traj:
             init_val.append(0.)
@@ -664,13 +667,16 @@ class PastureFunctional(
                     slice_sizes=(num_channels, 2 * self.r_obs, 2 * self.r_obs)
                 )
             if self.sgcnn:
+                obs_ = obs
+                # obs_list = []
+                # for _ in range(self.sgcnn_scale):
                 obs_1 = lax.dynamic_slice(
-                    obs,
+                    obs_,
                     start_indices=(
                         0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
                     slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
                 )
-                obs_ = lax.reduce_window(obs, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
+                obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
                 obs_2 = lax.dynamic_slice(
                     obs_,
                     start_indices=(
@@ -691,13 +697,17 @@ class PastureFunctional(
                         0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
                     slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
                 )
-                obs = lax.concatenate([
-                    obs_1,
-                    obs_2,
-                    obs_3,
-                    obs_4,
-                ],
-                    dimension=0)
+                obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
+                obs_5 = lax.dynamic_slice(
+                    obs_,
+                    start_indices=(
+                        0, self.r_obs - self.sgcnn_size // 2, self.r_obs - self.sgcnn_size // 2),
+                    slice_sizes=(num_channels, self.sgcnn_size, self.sgcnn_size)
+                )
+                obs_ = lax.reduce_window(obs_, -jnp.inf, lax.max, (1, 2, 2), (1, 2, 2), padding='VALID')
+                # obs_list.append(obs_1)
+                # obs = lax.concatenate(obs_list, dimension=0)
+                obs = lax.concatenate([obs_1, obs_2, obs_3, obs_4, obs_5], dimension=0)
             obs_dict['observation'] = obs
         return obs_dict
 
@@ -705,13 +715,14 @@ class PastureFunctional(
         """Checks if the state is terminal."""
         judge_out_of_time = state.timestep >= self.max_timestep
 
-        area_total = state.init_map.sum()
-        area_covered = area_total - state.map_frontier.sum()
-        coverage_ratio = area_covered / area_total
-        judge_covered_enough = coverage_ratio >= 0.99
+        # area_total = state.init_map.sum()
+        # area_covered = area_total - state.map_frontier.sum()
+        # coverage_ratio = area_covered / area_total
+        # judge_covered_enough = coverage_ratio >= 0.99
 
         pasture_covered_enough = state.map_weed.sum() == 0
-        judge_covered_enough = jnp.logical_or(judge_covered_enough, pasture_covered_enough)
+        judge_covered_enough = pasture_covered_enough
+        # judge_covered_enough = jnp.logical_or(judge_covered_enough, pasture_covered_enough)
 
         crash_too_much = state.crash_count > 5
 
@@ -732,15 +743,14 @@ class PastureFunctional(
         #                 + lax.select(v_linear == 0, -0.4, 0.))
         # reward_dynamic = -((jnp.abs(v_angular) / self.w_max) ** 2) / 2
 
-        # map_area = self.map_width * self.map_height
-        # coverage_t = map_area - state.map_frontier.sum()
-        # coverage_tp1 = map_area - next_state.map_frontier.sum()
-        # reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_vision * self.v_max * self.tau) * 0.125
-        #
-        # tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
-        # tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
-        # # reward_tv_global = -tv_t / jnp.sqrt(coverage_t)
-        # reward_tv_incremental = -(tv_tp1 - tv_t) / (self.v_max * self.tau) * 0.125
+        map_area = self.map_width * self.map_height
+        coverage_t = map_area - state.map_frontier.sum()
+        coverage_tp1 = map_area - next_state.map_frontier.sum()
+        reward_coverage = (coverage_tp1 - coverage_t) / (2 * self.r_vision * self.v_max * self.tau) * 0.0125
+
+        tv_t = total_variation(state.map_frontier.astype(dtype=jnp.int32))
+        tv_tp1 = total_variation(next_state.map_frontier.astype(dtype=jnp.int32))
+        reward_tv_incremental = -(tv_tp1 - tv_t) / (self.v_max * self.tau) * 0.0125
 
         num_weed = state.map_weed.sum() - next_state.map_weed.sum()
         reward_weed_cut = num_weed * 5.0
@@ -752,13 +762,16 @@ class PastureFunctional(
             delta_apf = 0.
         reward_weed_approach = delta_apf * 5.0
 
+        reward_traj_cum = -1.5 * next_state.traj_crossed
+
         reward = (
                 reward_const
                 + reward_collision
-                # + reward_coverage
-                # + reward_tv_incremental
+                + reward_coverage
+                + reward_tv_incremental
                 + reward_weed_cut
                 + reward_weed_approach
+                + reward_traj_cum
             # + reward_stiff
             # + reward_dynamic
             # + reward_steer
@@ -767,17 +780,20 @@ class PastureFunctional(
         # reward = reward / 10
         return reward
 
-    def step_info(
-            self, state: EnvState, action: jax.Array, next_state: EnvState
+    def state_info(
+            self, state: EnvState
     ) -> dict[str, Any]:
-        weed_rate = 1 - state.map_weed.sum() / state.weed_count
-        coverage_rate = 1 - state.map_frontier.sum() / state.init_map.sum()
-        path_length = state.map_trajectory.sum()
-        return {
-            'weed_rate': weed_rate,
-            'coverage_rate': coverage_rate,
-            'path_length': path_length,
-        }
+        if self.return_info:
+            weed_rate = 1 - state.map_weed.sum() / state.weed_count
+            coverage_rate = 1 - state.map_frontier.sum() / state.init_map.sum()
+            path_length = state.map_trajectory.sum()
+            return {
+                'weed_rate': weed_rate,
+                'coverage_rate': coverage_rate,
+                'path_length': path_length,
+            }
+        else:
+            return {}
 
     def render_image(
             self,
