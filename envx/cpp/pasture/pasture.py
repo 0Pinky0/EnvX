@@ -110,6 +110,12 @@ class PastureFunctional(
             vision_mask,
             False
         )
+        # vision_mask = in_triangle(
+        #     z_1=(r_vision, r_vision),
+        #     z_2=(r_vision - w_vision, 0),
+        #     z_3=(r_vision + w_vision, 0),
+        #     r=r_vision,
+        # )
 
     def __init__(
             self,
@@ -216,7 +222,7 @@ class PastureFunctional(
         # _, rng = jax.random.split(rng)
         # position = jnp.stack([x, y])
         # theta = jax.random.uniform(key=rng, minval=-jnp.pi, maxval=jnp.pi, shape=[1])
-        position = jnp.stack([4, 4])
+        position = jnp.stack([4., 4.])
         theta = jnp.array([jnp.pi / 2])
 
         x, y = position.round().astype(jnp.int32)
@@ -584,7 +590,7 @@ class PastureFunctional(
         init_val = [0., 1., 0.]
         if self.use_traj:
             init_val.append(0.)
-            # obs_list.append(state.map_trajectory)
+            obs_list.append(state.map_trajectory)
         obs = jnp.stack(
             obs_list,
             dtype=jnp.float32
@@ -598,11 +604,11 @@ class PastureFunctional(
             pose = jnp.array([cos_theta, sin_theta]).squeeze(axis=1)
             obs_dict['pose'] = pose
         if self.return_map:
-            obs_list.append(state.map_trajectory)
-            obs = jnp.stack(
-                obs_list,
-                dtype=jnp.float32
-            )
+            # obs_list.append(state.map_trajectory)
+            # obs = jnp.stack(
+            #     obs_list,
+            #     dtype=jnp.float32
+            # )
             obs_dict['map'] = obs
             obs_dict['position'] = state.position
             obs_dict['theta'] = state.theta
@@ -738,9 +744,9 @@ class PastureFunctional(
 
         num_weed = state.map_weed.sum() - next_state.map_weed.sum()
         reward_weed_cut = num_weed * 5.0
-        x_t, y_t = state.position.round().astype(jnp.int32)
-        x_tp1, y_tp1 = next_state.position.round().astype(jnp.int32)
         if self.use_apf:
+            x_t, y_t = state.position.round().astype(jnp.int32)
+            x_tp1, y_tp1 = next_state.position.round().astype(jnp.int32)
             delta_apf = state.observed_weed[y_tp1, x_tp1] - state.observed_weed[y_t, x_t]
         else:
             delta_apf = 0.
