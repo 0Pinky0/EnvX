@@ -6,14 +6,21 @@ render = True
 env = gym.make(
     'Pasture',
     render_mode='rgb_array' if render else None,
-    save_pixels=True,
-    action_type="continuous",
-    prevent_stiff=False,
+    # save_pixels=True,
+    # action_type="continuous",
+    # prevent_stiff=False,
+    # rotate_obs=True,
+    # sgcnn=True,
+    # weed_count=600,
+    # gaussian_weed=True,
+    # use_traj=True,
+    action_type="discrete",
     rotate_obs=True,
     sgcnn=True,
-    weed_count=600,
-    gaussian_weed=True,
-    use_traj=True
+    global_obs=True,
+    use_traj=True,
+    diff_traj=False,
+    use_apf=True,
 )
 if render:
     env = HumanRendering(env)

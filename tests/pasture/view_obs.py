@@ -14,7 +14,7 @@ scale_up = 3
 window = pygame.display.set_mode((r_obs * scale_up, r_obs * scale_up))
 clock = pygame.time.Clock()
 
-env = gym.make('Pasture', rotate_obs=True, use_traj=True)
+env = gym.make('Pasture', rotate_obs=True, use_traj=True, diff_traj=False, use_apf=True)
 state, _ = env.reset()
 
 while True:
@@ -26,12 +26,12 @@ while True:
     # mask_vision = np.broadcast_to(obs[4], shape=(3, r_obs, r_obs)).transpose(1, 2, 0)
     mask_traj = np.broadcast_to(obs[3], shape=(3, r_obs, r_obs)).transpose(1, 2, 0)
     img = np.ones([r_obs, r_obs, 3], dtype=np.uint8) * np.array([255, 215, 0])
-    img = np.where(mask_weed > 0.3, (1 - mask_weed) * np.array(
+    img = np.where(np.logical_not(mask_frontier), np.array([255, 255, 255], dtype=np.uint8), img)
+    img = np.where(mask_weed > 0.1, (1 - mask_weed) * np.array(
         [0, 255, 255], dtype=np.uint8
     ) + np.array(
         [255, 0, 0], dtype=np.uint8
     ), img)
-    img = np.where(np.logical_not(mask_frontier), np.array([255, 255, 255], dtype=np.uint8), img)
     # img = np.where(mask_vision, np.array([64, 64, 64], dtype=np.uint8), img)
     # img = np.where(mask_self, np.array([0, 255, 0], dtype=np.uint8), img)
     img = np.where(mask_obstacle, np.array([0, 0, 255], dtype=np.uint8), img)

@@ -11,6 +11,7 @@ env = gym.make(
     action_type="discrete",
     rotate_obs=True,
     sgcnn=True,
+    global_obs=True,
     use_traj=True,
     use_apf=True,
 )
